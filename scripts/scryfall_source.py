@@ -27,7 +27,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-USER_AGENT = "CoworldMTGDiscovery/1.0 (+https://github.com/Metta-AI/coworld-mtg)"
+USER_AGENT = "CoworldMTGDiscovery/1.0 (+https://github.com/softmax-universe/coworld-mtg)"
 DESCRIPTOR_URL = "https://api.scryfall.com/bulk-data/oracle_cards"
 RULES_URL = "https://media.wizards.com/2026/downloads/MagicCompRules%2020260819.txt"
 RULES_EXPECTED_SHA256 = "4381ad1b39ab2c05f7d03633a20f711ed37277074d3266dcba5f38cbb527423f"
