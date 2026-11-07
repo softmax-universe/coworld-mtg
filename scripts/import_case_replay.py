@@ -18,7 +18,7 @@ AUTHORED_DESCRIPTION = (
     "Authored case from the retained acceptance archive. The scenario is an authored "
     "engine setup and operation sequence, not a Scryfall-discovered case or a recorded human game."
 )
-ARCHIVE_URL = "https://github.com/Metta-AI/coworld-mtg/tree/main/cases/evidence/"
+ARCHIVE_URL = "https://github.com/softmax-universe/coworld-mtg/tree/main/cases/evidence/"
 
 
 class ImportError(ValueError):

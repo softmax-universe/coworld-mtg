@@ -12,7 +12,7 @@ from factory_replay import Replay, canonical, sha256, encode_json
 import seventeenlands_coverage as coverage
 
 PROGRAM = "coworld-mtg-harness/mine17lands"
-REPOSITORY = "https://github.com/Metta-AI/coworld-mtg.git"
+REPOSITORY = "https://github.com/softmax-universe/coworld-mtg.git"
 CONFIG_PROVIDER = "17Lands factory configuration"
 PROTOCOL = "17lands-native-json-v1"
 HASH = re.compile(r"^[0-9a-f]{64}$")

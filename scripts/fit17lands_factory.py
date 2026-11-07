@@ -19,7 +19,7 @@ from seventeenlands_coverage import strict_json, csv_records
 from seventeenlands_factory import artifact_bytes, artifact_json, payloads
 
 PROGRAM = "coworld-mtg-harness/fit17lands"
-REPOSITORY = "https://github.com/Metta-AI/coworld-mtg.git"
+REPOSITORY = "https://github.com/softmax-universe/coworld-mtg.git"
 CONFIG = "17Lands trajectory discovery configuration"
 REPORT = "17Lands trajectory discovery report"
 COMPARISON = "17Lands trajectory discovery comparison"

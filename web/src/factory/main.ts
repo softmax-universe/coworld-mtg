@@ -286,7 +286,7 @@ function renderRecovery(): string {
   const path = "replays/" + (state.replay?.run_id ?? "example");
   const quoted = "'" + path.replaceAll("'", "'\\''") + "'";
   return `<section class="artifact-recovery"><h3>Restore missing source artifacts</h3><p>For a shared package with <code>external-artifacts.json</code>, run the following from the repository checkout. Replace the directory if your package is stored elsewhere.</p><pre>python3 scripts/share_factory_replay.py hydrate ${esc(quoted)} --runtime target/debug/factory-runtime
-target/debug/factory-runtime export ${esc(quoted)} --output complete.replay.json</pre><p>Hydration verifies downloaded bytes before adding them. For other missing or mismatched evidence, obtain the original hash-matching artifact from the run producer. Then retry export from the served run, or open <code>complete.replay.json</code> for offline inspection.</p><p><a href="https://github.com/Metta-AI/coworld-mtg/blob/main/docs/software-factory.md#share-a-run" target="_blank" rel="noreferrer">Hydration and portable export instructions ↗</a></p></section>`;
+target/debug/factory-runtime export ${esc(quoted)} --output complete.replay.json</pre><p>Hydration verifies downloaded bytes before adding them. For other missing or mismatched evidence, obtain the original hash-matching artifact from the run producer. Then retry export from the served run, or open <code>complete.replay.json</code> for offline inspection.</p><p><a href="https://github.com/softmax-universe/coworld-mtg/blob/main/docs/software-factory.md#share-a-run" target="_blank" rel="noreferrer">Hydration and portable export instructions ↗</a></p></section>`;
 }
 function renderInspector(): string {
   if (state.historyOpen && state.replay) {

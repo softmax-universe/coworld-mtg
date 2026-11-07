@@ -169,7 +169,7 @@ def fetch_source(url, destination, max_bytes=MAX_BYTES, timeout=30):
     https_url(url)
     opener = build_opener(HTTPSRedirects())
     request = Request(url, headers={
-        "User-Agent": "Coworld-Replay-Hydrator/1.0 (+https://github.com/Metta-AI/coworld-mtg)",
+        "User-Agent": "Coworld-Replay-Hydrator/1.0 (+https://github.com/softmax-universe/coworld-mtg)",
         "Accept": "*/*", "Accept-Encoding": "identity",
     })
     with opener.open(request, timeout=timeout) as response:
