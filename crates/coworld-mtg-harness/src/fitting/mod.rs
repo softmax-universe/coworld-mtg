@@ -86,6 +86,20 @@ pub struct IssueCandidate {
     pub evidence: Option<Value>,
 }
 
+/// One reason branches were rejected, with how many branches it rejected.
+/// `expected` and `example_actual` come from the first rejected branch only.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RejectionCount {
+    pub milestone: Option<MilestoneKey>,
+    pub kind: String,
+    pub subject: String,
+    pub count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example_actual: Option<Value>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FitInput {
     pub seed: u64,
@@ -135,6 +149,15 @@ pub struct FitResult {
     pub milestones_total: usize,
     pub fully_covered_milestones: usize,
     pub witness: Vec<FitAction>,
+    /// Branches skipped because the same engine state and observation progress
+    /// had already been expanded. Reaching one state by another action order is
+    /// not a new search state.
+    #[serde(default)]
+    pub duplicate_states: u64,
+    /// How often each observation, boundary or engine check rejected a branch,
+    /// counted over every explored branch rather than the single retained one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejections: Vec<RejectionCount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<FitTrace>,
     pub issues: Vec<IssueCandidate>,

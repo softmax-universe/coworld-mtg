@@ -3,14 +3,29 @@ use phase_bridge::{PhaseGame, StackEntryKind, Zone, SPECTATOR_ID};
 use std::collections::BTreeMap;
 
 pub(crate) fn validate_invariants(game: &PhaseGame) -> Result<()> {
+    // A card the engine has revealed to everyone, or shown to one player by a
+    // "look at" effect, is legitimately visible in its owner's hand.
+    let authoritative = game.state();
+    let revealed = |id: &phase_bridge::ObjectId| {
+        authoritative.revealed_cards.contains(id)
+            || authoritative.public_revealed_cards.contains(id)
+    };
     for seat in [0, 1] {
         let state = game.viewer_state(seat);
         let opponent = 1 - seat as usize;
+        let looked_at = |id: &phase_bridge::ObjectId| {
+            authoritative
+                .private_look_player
+                .is_some_and(|player| player.0 == seat)
+                && authoritative.private_look_ids.contains(id)
+        };
         if state.players[opponent].hand.iter().any(|id| {
-            state
-                .objects
-                .get(id)
-                .is_none_or(|card| card.name != "Hidden Card" || !card.face_down)
+            !revealed(id)
+                && !looked_at(id)
+                && state
+                    .objects
+                    .get(id)
+                    .is_none_or(|card| card.name != "Hidden Card" || !card.face_down)
         }) {
             bail!("hidden_information_leak: seat {seat} can inspect opponent hand");
         }
@@ -21,10 +36,11 @@ pub(crate) fn validate_invariants(game: &PhaseGame) -> Result<()> {
         .iter()
         .flat_map(|player| player.hand.iter())
         .any(|id| {
-            spectator
-                .objects
-                .get(id)
-                .is_none_or(|card| card.name != "Hidden Card" || !card.face_down)
+            !revealed(id)
+                && spectator
+                    .objects
+                    .get(id)
+                    .is_none_or(|card| card.name != "Hidden Card" || !card.face_down)
         })
     {
         bail!("hidden_information_leak: spectator can inspect a player hand");

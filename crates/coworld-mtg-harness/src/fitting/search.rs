@@ -1,9 +1,14 @@
 use super::trace::{materialize, project_state, RecordedStep};
 use super::*;
 use phase_bridge::{GameAction, GameEvent, PhaseGame, PhaseRuntime, Zone};
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize)]
 struct Progress {
     events: BTreeMap<String, Vec<String>>,
     turns: [u32; 2],
@@ -86,6 +91,21 @@ fn observe(game: &PhaseGame, event: &GameEvent, progress: &mut Progress) {
         }
         _ => {}
     }
+}
+
+/// Events between the last stable End state and the next TurnStarted that
+/// cannot change any EOT projection: emptying mana pools and clearing marked
+/// damage touch neither life, zones, nor the per-turn event lists. Anything
+/// else (a cleanup discard, a death, a trigger) still makes the boundary
+/// unsupported.
+fn neutral_before_turn(event: &GameEvent) -> bool {
+    matches!(
+        event,
+        GameEvent::PriorityPassed { .. }
+            | GameEvent::PhaseChanged { .. }
+            | GameEvent::ManaPoolEmptied { .. }
+            | GameEvent::DamageCleared { .. }
+    )
 }
 
 fn actual(game: &PhaseGame, progress: &Progress, seat: u8, metric: &str) -> Option<Value> {
@@ -226,6 +246,50 @@ fn all_trace_keys(input: &FitInput) -> Vec<MilestoneKey> {
     keys
 }
 
+/// The first enforced field of the current turn that its observation progress
+/// has already exceeded.
+///
+/// Within a turn the per-turn event lists only grow: `progress.events` is
+/// cleared only when a turn starts. Once a list holds more copies of a name
+/// than the recorded multiset, or more entries than a recorded count, no
+/// continuation of that turn can match the EOT comparison, so the branch can be
+/// rejected now instead of after exploring every remaining action in the turn.
+fn exceeded_turn_field<'a>(
+    input: &'a FitInput,
+    progress: &Progress,
+    owner: u8,
+) -> Option<(&'a SourceField, Value)> {
+    let index = progress.turns[owner as usize];
+    input.fields.iter().find_map(|field| {
+        let key = field.milestone.as_ref()?;
+        if field.disposition != FieldDisposition::Enforced
+            || key.turn_owner != owner
+            || key.turn_index != index
+        {
+            return None;
+        }
+        let expected = field.expected.as_ref()?;
+        let metric = field.projection.as_deref()?;
+        let seen = progress.list(key.observed_player, metric);
+        let exceeded = match metric {
+            "drawn"
+            | "land_played"
+            | "creature_cast"
+            | "non_creature_cast"
+            | "instant_sorcery_cast" => {
+                let allowed = expected.as_array()?;
+                seen.iter().any(|name| {
+                    seen.iter().filter(|n| *n == name).count()
+                        > allowed.iter().filter(|n| n.as_str() == Some(name)).count()
+                })
+            }
+            "drawn_or_tutored_count" => seen.len() as f64 > expected.as_f64()?,
+            _ => false,
+        };
+        exceeded.then(|| (field, serde_json::to_value(&seen).unwrap()))
+    })
+}
+
 fn matching(comparisons: &[TraceMilestone]) -> bool {
     comparisons.iter().all(|m| {
         m.fields
@@ -274,7 +338,35 @@ fn actions(game: &PhaseGame, progress: &Progress, input: &FitInput) -> Vec<FitAc
                 }
             }
         }
+        // Phase offers one representative answer to a library search; the
+        // pending choice itself admits any of its listed cards.
+        for action in game.search_choice_selections(seat) {
+            if !flat.contains(&action) {
+                flat.push(action);
+            }
+        }
+        // Copies sharing a name in a library are interchangeable. Offering each copy
+        // repeats one subtree per copy, so keep the first selection per name multiset.
+        let mut library_choices = std::collections::BTreeSet::new();
         for action in flat {
+            if let GameAction::SelectCards { cards } = &action {
+                let names = cards
+                    .iter()
+                    .map(|id| {
+                        game.state()
+                            .objects
+                            .get(id)
+                            .filter(|object| object.zone == Zone::Library)
+                            .map(|object| object.name.clone())
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if names.is_some_and(|mut names| {
+                    names.sort();
+                    !library_choices.insert((seat, names))
+                }) {
+                    continue;
+                }
+            }
             if allowed_mulligan(&action)
                 && serde_json::to_value(&action).unwrap()["type"] != "Concede"
             {
@@ -330,6 +422,51 @@ fn actions(game: &PhaseGame, progress: &Progress, input: &FitInput) -> Vec<FitAc
         )
     });
     result
+}
+
+type Tally = BTreeMap<(usize, &'static str, String), (u64, Option<Value>, Option<Value>)>;
+
+fn count_rejection(
+    tally: &mut Tally,
+    milestone: usize,
+    kind: &'static str,
+    subject: String,
+    expected: Option<&Value>,
+    actual: Option<&Value>,
+) {
+    tally
+        .entry((milestone, kind, subject))
+        .or_insert_with(|| (0, expected.cloned(), actual.cloned()))
+        .0 += 1;
+}
+
+/// Identity of a search state: the complete engine state, including its RNG
+/// stream but not Phase's AI-only cancelled-cast guard, together with
+/// everything the observation checks still depend on.
+fn sort_object_keys(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let mut entries = std::mem::take(map).into_iter().collect::<Vec<_>>();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            for (key, mut child) in entries {
+                sort_object_keys(&mut child);
+                map.insert(key, child);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(sort_object_keys),
+        _ => {}
+    }
+}
+
+fn search_state_key(game: &PhaseGame, progress: &Progress, next: usize) -> Option<[u8; 32]> {
+    // Phase keeps some state in hash maps, whose serialized key order changes
+    // from run to run. Hash a key-sorted form so equal states get equal keys.
+    let mut identity: Value = serde_json::from_str(&game.fitting_identity_json().ok()?).ok()?;
+    sort_object_keys(&mut identity);
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&identity).ok()?);
+    hasher.update(serde_json::to_vec(&(progress, next)).ok()?);
+    Some(hasher.finalize().into())
 }
 
 struct Node {
@@ -407,8 +544,8 @@ pub fn search_game(
     let mut result = FitResult {
         seed: input.seed,
         schema: FIT_SCHEMA.into(), status: FitStatus::InputIssue, nodes: 0, matched_prefix_backtracks: 0, elapsed_millis: 0, milestones_fitted: 0, milestones_total: input.milestones.len(), fully_covered_milestones: 0,
-        witness: vec![], trace: Some(FitTrace {schema:"coworld-17lands-fit-trace-v1".into(),path_kind:TracePathKind::NoExecution,initial_state:None,transitions:vec![],milestones:comparisons(None,None,input,&all_trace_keys(input),None),failure:None}), issues: input.issues.clone(), limits: limits.clone(), assumptions: input.assumptions.clone(),
-        search: "Depth-first exact offered actions with cross-milestone backtracking; node and path-length limits count forced actions too; no completeness claim over hidden setups.".into(),
+        witness: vec![], duplicate_states: 0, rejections: vec![], trace: Some(FitTrace {schema:"coworld-17lands-fit-trace-v1".into(),path_kind:TracePathKind::NoExecution,initial_state:None,transitions:vec![],milestones:comparisons(None,None,input,&all_trace_keys(input),None),failure:None}), issues: input.issues.clone(), limits: limits.clone(), assumptions: input.assumptions.clone(),
+        search: "Depth-first exact offered actions, plus every answer a pending unconstrained library search lists (one per name multiset), with cross-milestone backtracking; a branch reaching an engine state and observation progress already expanded is skipped; node and path-length limits count forced actions too; no completeness claim over hidden setups.".into(),
         manifest_id: String::new(), phase_revision: phase_bridge::PHASE_REVISION.into(), source_sha256: input.source_sha256.clone(), cards_mapping_sha256: input.cards_mapping_sha256.clone(), input_sha256: String::new(),
     };
     if !input.issues.is_empty() {
@@ -490,6 +627,8 @@ pub fn search_game(
     let mut retained_boundary = None;
     let mut stack = vec![Node::new(game, progress, 0, vec![], None, input)];
     let mut failure_count = 0;
+    let mut tally = Tally::new();
+    let mut visited = HashSet::<[u8; 32]>::new();
     let mut truncated = false;
     let mut unsupported_boundary = false;
     while let Some(node) = stack.last_mut() {
@@ -560,7 +699,7 @@ pub fn search_game(
         result.nodes += 1;
         let mut candidate = node.game.fork();
         let submission = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            candidate.submit(action.seat, action.action.clone())
+            candidate.submit_for_fitting(action.seat, action.action.clone())
         }));
         let events = match submission {
             Ok(Ok(output)) => output.events,
@@ -569,6 +708,14 @@ pub fn search_game(
                     Ok(Err(error)) => error.to_string(),
                     _ => "Phase panicked while submitting an offered action".into(),
                 };
+                count_rejection(
+                    &mut tally,
+                    node.next,
+                    "offered_action_failure",
+                    detail.clone(),
+                    None,
+                    None,
+                );
                 retain_failure(
                     &mut retained_failure,
                     node.next,
@@ -597,6 +744,14 @@ pub fn search_game(
             }
         };
         if let Err(error) = crate::invariants::validate_invariants(&candidate) {
+            count_rejection(
+                &mut tally,
+                node.next,
+                "invariant_failure",
+                error.to_string(),
+                None,
+                None,
+            );
             retain_failure(
                 &mut retained_failure,
                 node.next,
@@ -647,12 +802,7 @@ pub fn search_game(
                 .filter(|e| matches!(e, GameEvent::TurnStarted { .. }))
                 .count()
                 == 1
-                && events[..transition].iter().all(|event| {
-                    matches!(
-                        event,
-                        GameEvent::PriorityPassed { .. } | GameEvent::PhaseChanged { .. }
-                    )
-                });
+                && events[..transition].iter().all(neutral_before_turn);
             if !neutral || format!("{:?}", node.game.state().phase) != "End" {
                 unsupported_boundary = true;
                 reject = true;
@@ -666,7 +816,7 @@ pub fn search_game(
                             .to_owned()
                     })
                     .collect::<Vec<_>>();
-                rejection_detail=format!("The selected EOT projection requires a last stable End state followed by exactly one TurnStarted and only neutral PriorityPassed/PhaseChanged events before it. This branch had phase {:?}, {} TurnStarted event(s), and preceding event kinds {:?}; no boundary field actuals are claimed.",node.game.state().phase,events.iter().filter(|e|matches!(e,GameEvent::TurnStarted{..})).count(),preceding);
+                rejection_detail=format!("The selected EOT projection requires a last stable End state followed by exactly one TurnStarted and only neutral PriorityPassed/PhaseChanged/ManaPoolEmptied/DamageCleared events before it. This branch had phase {:?}, {} TurnStarted event(s), and preceding event kinds {:?}; no boundary field actuals are claimed.",node.game.state().phase,events.iter().filter(|e|matches!(e,GameEvent::TurnStarted{..})).count(),preceding);
                 milestone_receipts =
                     comparisons(None, None, input, &input.milestones[next..end], None);
             } else {
@@ -711,6 +861,53 @@ pub fn search_game(
             events,
         };
         if reject {
+            if rejection_kind == TraceFailureKind::UnsupportedBoundary {
+                let subject = format!(
+                    "turn ended from phase {:?} after {:?}",
+                    node.game.state().phase,
+                    transition
+                        .events
+                        .iter()
+                        .take_while(|e| !matches!(e, GameEvent::TurnStarted { .. }))
+                        .filter(|e| !neutral_before_turn(e))
+                        .map(|e| {
+                            serde_json::to_value(e).expect("serializable native event")["type"]
+                                .as_str()
+                                .unwrap_or("unknown")
+                                .to_owned()
+                        })
+                        .collect::<Vec<_>>()
+                );
+                count_rejection(
+                    &mut tally,
+                    node.next,
+                    "unsupported_boundary",
+                    subject,
+                    None,
+                    None,
+                );
+            } else {
+                for milestone in &milestone_receipts {
+                    let index = input
+                        .milestones
+                        .iter()
+                        .position(|key| *key == milestone.key)
+                        .unwrap_or(node.next);
+                    for field in milestone.fields.iter().filter(|f| {
+                        f.disposition == FieldDisposition::Enforced
+                            && f.comparison != FieldComparison::Matched
+                    }) {
+                        count_rejection(
+                            &mut tally,
+                            index,
+                            "mismatched",
+                            field.source_field_id.clone(),
+                            field.expected.as_ref(),
+                            field.actual.as_ref(),
+                        );
+                    }
+                }
+            }
             let make_failure = || TraceFailure {
                 path_kind: FailurePathKind::SeparateSearchBranch,
                 kind: rejection_kind.clone(),
@@ -735,6 +932,19 @@ pub fn search_game(
                     make_failure,
                 );
             }
+            continue;
+        }
+        if let Some((field, seen)) =
+            exceeded_turn_field(input, &progress, candidate.state().active_player.0)
+        {
+            count_rejection(
+                &mut tally,
+                next,
+                "exceeded_before_eot",
+                field.column.clone(),
+                field.expected.as_ref(),
+                Some(&seen),
+            );
             continue;
         }
         let path = Some(Arc::new(RecordedStep {
@@ -764,7 +974,12 @@ pub fn search_game(
         }
         // All earlier matching branches remain on this stack until their alternatives
         // are exhausted. Neither state-only memoization nor first-anchor commitment
-        // can discard a different observation history.
+        // can discard a different observation history, so the key below covers the
+        // observation progress as well as the engine state.
+        if search_state_key(&candidate, &progress, next).is_some_and(|key| !visited.insert(key)) {
+            result.duplicate_states += 1;
+            continue;
+        }
         stack.push(Node::new(candidate, progress, next, trace, path, input));
     }
     if result.status != FitStatus::MatchedSupportedProjection {
@@ -777,6 +992,22 @@ pub fn search_game(
         };
         result.issues.push(IssueCandidate { kind: if truncated { IssueKind::BudgetExhausted } else if unsupported_boundary { IssueKind::UnsupportedBoundary } else { IssueKind::NoWitnessUnderAssumptions }, detail: "No complete supported-projection witness was found in the recorded bounded search and single reconstructed setup; this does not establish a rules discrepancy or global unreachability.".into(), source_columns: vec![], evidence: None });
     }
+    let mut rejections = tally
+        .into_iter()
+        .map(
+            |((milestone, kind, subject), (count, expected, example_actual))| RejectionCount {
+                milestone: input.milestones.get(milestone).cloned(),
+                kind: kind.to_owned(),
+                subject,
+                count,
+                expected,
+                example_actual,
+            },
+        )
+        .collect::<Vec<_>>();
+    rejections.sort_by_key(|r| std::cmp::Reverse(r.count));
+    rejections.truncate(48);
+    result.rejections = rejections;
     let (transitions, mut milestones) = materialize(&best_path);
     let reached = milestones.iter().map(|m| m.key.clone()).collect::<Vec<_>>();
     let missing = all_trace_keys(input)
@@ -813,6 +1044,26 @@ mod tests {
             choice: phase_bridge::MulliganChoice::Keep
         }));
         assert!(allowed_mulligan(&GameAction::PassPriority));
+    }
+    #[test]
+    fn cleanup_bookkeeping_is_neutral_at_the_turn_boundary() {
+        let event = |value: Value| -> GameEvent { serde_json::from_value(value).unwrap() };
+        for neutral in [
+            event(serde_json::json!({"type":"ManaPoolEmptied",
+                "data":{"color":"White","player_id":0,"source_id":3}})),
+            GameEvent::DamageCleared {
+                object_id: phase_bridge::ObjectId(3),
+            },
+        ] {
+            assert!(neutral_before_turn(&neutral), "{neutral:?}");
+        }
+        // Cleanup that changes life or zones still makes the boundary unsupported.
+        for changing in [
+            event(serde_json::json!({"type":"LifeChanged","data":{"player_id":0,"amount":-2}})),
+            event(serde_json::json!({"type":"CardDrawn","data":{"player_id":0,"object_id":3}})),
+        ] {
+            assert!(!neutral_before_turn(&changing), "{changing:?}");
+        }
     }
     #[test]
     fn list_comparison_preserves_multiplicity() {
@@ -878,6 +1129,50 @@ mod witness_tests {
             projection: Some(metric.into()),
             expected: Some(expected),
         }
+    }
+    #[test]
+    fn turn_progress_beyond_a_recorded_multiset_or_count_is_rejected_early() {
+        let key = |turn_owner, turn_index, observed_player| MilestoneKey {
+            turn_owner,
+            turn_index,
+            boundary: Boundary::EndOfTurn,
+            observed_player,
+        };
+        let mut input = input();
+        input.fields = vec![
+            field(
+                key(0, 2, 0),
+                "instant_sorcery_cast",
+                serde_json::json!(["Alpha", "Beta"]),
+            ),
+            field(key(0, 2, 1), "drawn_or_tutored_count", Value::from(1)),
+        ];
+        let mut unsupported = field(key(0, 2, 1), "land_played", serde_json::json!([]));
+        unsupported.disposition = FieldDisposition::Unsupported;
+        input.fields.push(unsupported);
+        let mut progress = Progress {
+            turns: [2, 1],
+            ..Default::default()
+        };
+        progress.add(0, "instant_sorcery_cast", "Beta".into());
+        progress.add(0, "instant_sorcery_cast", "Alpha".into());
+        progress.add(1, "drawn_or_tutored_count", "Gamma".into());
+        progress.add(1, "land_played", "Alpha".into());
+        // Matching so far, and unsupported fields never reject.
+        assert!(exceeded_turn_field(&input, &progress, 0).is_none());
+        let mut extra = progress.clone();
+        extra.add(0, "instant_sorcery_cast", "Beta".into());
+        let (field, seen) = exceeded_turn_field(&input, &extra, 0).unwrap();
+        assert_eq!(field.projection.as_deref(), Some("instant_sorcery_cast"));
+        assert_eq!(seen, serde_json::json!(["Beta", "Alpha", "Beta"]));
+        let mut drawn = progress.clone();
+        drawn.add(1, "drawn_or_tutored_count", "Gamma".into());
+        let (field, _) = exceeded_turn_field(&input, &drawn, 0).unwrap();
+        assert_eq!(field.projection.as_deref(), Some("drawn_or_tutored_count"));
+        // Only the active player's current turn is constrained.
+        assert!(exceeded_turn_field(&input, &extra, 1).is_none());
+        extra.turns[0] = 3;
+        assert!(exceeded_turn_field(&input, &extra, 0).is_none());
     }
     #[test]
     fn known_compatible_trace_requires_backtracking_across_first_match() {
@@ -1118,7 +1413,9 @@ mod witness_tests {
             &runtime,
             &input,
             FitLimits {
-                nodes: 100,
+                // Small enough that the search is cut off: an exhausted search
+                // reports its boundary rejection instead of this mismatch.
+                nodes: 25,
                 max_actions: 40,
             },
         )

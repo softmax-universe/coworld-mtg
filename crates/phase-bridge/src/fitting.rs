@@ -47,7 +47,9 @@ impl PhaseRuntime {
     ///
     /// Phase still offers its normal mulligan choices. A fitter constrained by
     /// recorded zero mulligans must admit only Phase's offered Keep decisions.
-    /// Later shuffles and draws continue to use Phase's seeded RNG normally.
+    /// Draws and other random outcomes use Phase's seeded RNG normally, but a
+    /// shuffle submitted through `submit_for_fitting` keeps the remaining
+    /// cards in this order.
     pub fn new_limited_game_for_fitting(
         &self,
         decks: [Vec<String>; 2],
@@ -178,6 +180,14 @@ impl PhaseRuntime {
     }
 }
 
+/// A pending unconstrained library search owned by one seat: its listed
+/// candidates, how many to find, and whether finding fewer is permitted.
+struct PendingSearch {
+    cards: Vec<ObjectId>,
+    count: usize,
+    allows_partial_find: bool,
+}
+
 impl PhaseGame {
     /// Branch an authoritative search state, including its current RNG stream.
     pub fn fork(&self) -> Self {
@@ -185,6 +195,190 @@ impl PhaseGame {
             state: self.state.clone(),
             cards: self.cards.clone(),
         }
+    }
+
+    /// Serialized identity of this state for recognizing a repeated search state.
+    ///
+    /// Phase records each cancelled cast in `cancelled_casts`, a guard against
+    /// its own AI looping cast→cancel→recast. No rules code or legal-action
+    /// listing reads it, and it clears on the next priority pass or land play,
+    /// so states differing only there offer the same actions and futures. With
+    /// it excluded, backing out of a cast returns to the state it left.
+    pub fn fitting_identity_json(&self) -> Result<String, BridgeError> {
+        if self.state.cancelled_casts.is_empty() {
+            return self.checkpoint_json();
+        }
+        let mut game = self.fork();
+        game.state.cancelled_casts.clear();
+        game.checkpoint_json()
+    }
+
+    fn pending_search(&self, seat: u8) -> Option<PendingSearch> {
+        let waiting = serde_json::to_value(&self.state.waiting_for).ok()?;
+        let data = waiting
+            .get("data")
+            .filter(|_| waiting["type"] == "SearchChoice")?;
+        // Only an unconstrained choice is fully described by its card list and
+        // count; any other constraint is left to Phase's own offered actions.
+        if data["player"].as_u64() != Some(u64::from(seat)) || data["constraint"]["type"] != "None"
+        {
+            return None;
+        }
+        Some(PendingSearch {
+            cards: serde_json::from_value(data["cards"].clone()).ok()?,
+            count: usize::try_from(data["count"].as_u64()?).ok()?,
+            allows_partial_find: data["allows_partial_find"].as_bool()?,
+        })
+    }
+
+    /// Every answer a pending unconstrained library search admits, one per
+    /// multiset of card names.
+    ///
+    /// Phase lists the search's candidate cards but offers a single
+    /// representative selection among them, so the remaining candidates are
+    /// unreachable through `legal_actions`. Same-named library cards are
+    /// interchangeable here, so each name multiset is selected once, using the
+    /// earliest listed copies.
+    pub fn search_choice_selections(&self, seat: u8) -> Vec<GameAction> {
+        let Some(search) = self.pending_search(seat) else {
+            return vec![];
+        };
+        let mut groups: Vec<(String, Vec<ObjectId>)> = vec![];
+        for id in &search.cards {
+            let Some(object) = self.state.objects.get(id) else {
+                return vec![];
+            };
+            match groups.iter_mut().find(|(name, _)| *name == object.name) {
+                Some((_, ids)) => ids.push(*id),
+                None => groups.push((object.name.clone(), vec![*id])),
+            }
+        }
+        let most = search.count.min(search.cards.len());
+        let fewest = if search.allows_partial_find { 0 } else { most };
+        let mut result = vec![];
+        for size in fewest..=most {
+            select_by_name(&groups, size, &mut vec![], &mut result);
+        }
+        result
+    }
+
+    /// Submit an offered action, or an answer `search_choice_selections` admits.
+    ///
+    /// A library shuffle during the game keeps the reconstructed name order of
+    /// the cards that remain, as `keep_order_through_shuffles` describes.
+    pub fn submit_for_fitting(
+        &mut self,
+        seat: u8,
+        action: GameAction,
+    ) -> Result<ActionResult, BridgeError> {
+        let admitted = match (&action, self.pending_search(seat)) {
+            (GameAction::SelectCards { cards }, Some(search)) => search.admits(cards),
+            _ => false,
+        };
+        let before = self.library_names();
+        let result = if admitted {
+            apply(&mut self.state, PlayerId(seat), action)
+                .map_err(|error| BridgeError::Action(error.to_string()))?
+        } else {
+            self.submit(seat, action)?
+        };
+        self.keep_order_through_shuffles(&before, &result.events);
+        Ok(result)
+    }
+
+    fn library_names(&self) -> Vec<Vec<String>> {
+        self.state
+            .players
+            .iter()
+            .map(|player| {
+                player
+                    .library
+                    .iter()
+                    .map(|id| self.state.objects[id].name.clone())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Reorder each library Phase shuffled so its cards follow the name order
+    /// it had before the action.
+    ///
+    /// The fitting setup fixes one hidden library order so recorded draws come
+    /// in recorded order. A shuffle's outcome is just as hidden, and Phase's
+    /// seeded permutation would discard that hypothesis for every later draw.
+    /// Any order is a possible shuffle outcome, so the reconstruction keeps the
+    /// one consistent with its setup: same-named cards are interchangeable,
+    /// cards that left take the deepest slot of their name, and cards that
+    /// joined the library go to the bottom in Phase's order.
+    fn keep_order_through_shuffles(&mut self, before: &[Vec<String>], events: &[GameEvent]) {
+        for event in events {
+            let value = serde_json::to_value(event).unwrap_or_default();
+            if value["type"] != "PlayerPerformedAction"
+                || value["data"]["action"] != "ShuffledLibrary"
+            {
+                continue;
+            }
+            let Some(seat) = value["data"]["player_id"].as_u64() else {
+                continue;
+            };
+            let (Some(player), Some(previous)) = (
+                self.state.players.get(seat as usize),
+                before.get(seat as usize),
+            ) else {
+                continue;
+            };
+            let mut pool = player.library.iter().copied().collect::<Vec<_>>();
+            let mut ordered = Vec::with_capacity(pool.len());
+            for name in previous {
+                if let Some(index) = pool
+                    .iter()
+                    .position(|id| self.state.objects[id].name == *name)
+                {
+                    ordered.push(pool.remove(index));
+                }
+            }
+            ordered.extend(pool);
+            self.state.players[seat as usize].library = ordered.into_iter().collect();
+        }
+    }
+}
+
+impl PendingSearch {
+    /// Distinct listed cards, exactly as many as can be found unless the
+    /// search permits finding fewer.
+    fn admits(&self, selected: &[ObjectId]) -> bool {
+        let mut distinct = selected.to_vec();
+        distinct.sort_by_key(|id| id.0);
+        distinct.dedup();
+        distinct.len() == selected.len()
+            && selected.iter().all(|id| self.cards.contains(id))
+            && if self.allows_partial_find {
+                selected.len() <= self.count
+            } else {
+                selected.len() == self.count.min(self.cards.len())
+            }
+    }
+}
+
+fn select_by_name(
+    groups: &[(String, Vec<ObjectId>)],
+    size: usize,
+    chosen: &mut Vec<ObjectId>,
+    result: &mut Vec<GameAction>,
+) {
+    if size == 0 {
+        result.push(GameAction::SelectCards {
+            cards: chosen.clone(),
+        });
+        return;
+    }
+    let Some(((_, ids), rest)) = groups.split_first() else {
+        return;
+    };
+    for take in (0..=size.min(ids.len())).rev() {
+        chosen.extend(&ids[..take]);
+        select_by_name(rest, size - take, chosen, result);
+        chosen.truncate(chosen.len() - take);
     }
 }
 
@@ -427,6 +621,164 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn search_selections_cover_each_name_multiset_once() {
+        let groups = vec![
+            (
+                "Plains".to_owned(),
+                vec![ObjectId(54), ObjectId(49), ObjectId(67)],
+            ),
+            ("Island".to_owned(), vec![ObjectId(81)]),
+        ];
+        let selections = |size| {
+            let mut result = vec![];
+            select_by_name(&groups, size, &mut vec![], &mut result);
+            result
+                .into_iter()
+                .map(|action| match action {
+                    GameAction::SelectCards { cards } => {
+                        cards.into_iter().map(|id| id.0).collect::<Vec<_>>()
+                    }
+                    other => panic!("unexpected {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(selections(0), vec![Vec::<u64>::new()]);
+        // The representative Phase offers is the first listed card; the Island
+        // listed last is a separate answer, and the other Plains are not.
+        assert_eq!(selections(1), vec![vec![54], vec![81]]);
+        assert_eq!(selections(2), vec![vec![54, 49], vec![54, 81]]);
+        assert_eq!(selections(4), vec![vec![54, 49, 67, 81]]);
+        assert!(selections(5).is_empty());
+    }
+
+    #[test]
+    fn search_answers_must_be_distinct_listed_cards_of_an_admitted_size() {
+        let search = |allows_partial_find| PendingSearch {
+            cards: vec![ObjectId(54), ObjectId(49), ObjectId(81)],
+            count: 1,
+            allows_partial_find,
+        };
+        let ids = |ids: &[u8]| {
+            ids.iter()
+                .map(|id| ObjectId((*id).into()))
+                .collect::<Vec<_>>()
+        };
+        for partial in [true, false] {
+            assert!(search(partial).admits(&ids(&[81])));
+            assert!(search(partial).admits(&ids(&[54])));
+            assert!(!search(partial).admits(&ids(&[7])), "unlisted card");
+            assert!(!search(partial).admits(&ids(&[54, 81])), "too many");
+        }
+        assert!(search(true).admits(&[]));
+        assert!(!search(false).admits(&[]));
+        let mut two = search(false);
+        two.count = 2;
+        assert!(!two.admits(&ids(&[54, 54])), "repeated card");
+        assert!(two.admits(&ids(&[54, 81])));
+        // A search for more than remain must find all that remain.
+        two.count = 5;
+        assert!(two.admits(&ids(&[54, 49, 81])));
+        assert!(!two.admits(&ids(&[54, 81])));
+    }
+
+    #[test]
+    fn fitting_submission_outside_a_search_stays_limited_to_offered_actions() {
+        let runtime = runtime();
+        let (mut game, _) = runtime
+            .new_limited_game_for_fitting([deck(), deck()], [deck(), deck()], 0, 41)
+            .unwrap();
+        assert!(game.search_choice_selections(0).is_empty());
+        let card = game.state().players[0].library[0];
+        let error = game
+            .submit_for_fitting(0, GameAction::SelectCards { cards: vec![card] })
+            .unwrap_err();
+        assert!(matches!(error, BridgeError::Action(_)), "{error:?}");
+        let keep = GameAction::MulliganDecision {
+            choice: MulliganChoice::Keep,
+        };
+        assert!(game.submit_for_fitting(0, keep).is_ok());
+    }
+
+    #[test]
+    fn shuffles_keep_the_reconstructed_name_order_of_the_remaining_library() {
+        let runtime = runtime();
+        let ordered = [
+            vec!["Beta".to_owned(); 7],
+            vec!["Alpha".to_owned(), "Beta".to_owned(), "Alpha".to_owned()],
+            vec!["Beta".to_owned(); 12],
+            vec!["Alpha".to_owned(); 18],
+        ]
+        .concat();
+        let (mut game, _) = runtime
+            .new_limited_game_for_fitting([deck(), deck()], [ordered.clone(), deck()], 0, 41)
+            .unwrap();
+        let before = game.library_names();
+        assert_eq!(before[0], ordered[7..]);
+        // A search took the top Alpha, then Phase shuffled the rest.
+        let library = &mut game.state.players[0].library;
+        let mut rest = library.iter().copied().skip(1).collect::<Vec<_>>();
+        rest.reverse();
+        *library = rest.into_iter().collect();
+        let untouched = game.state.players[1].library.clone();
+        let shuffle = |player: u8| {
+            serde_json::from_value::<GameEvent>(serde_json::json!({
+                "type": "PlayerPerformedAction",
+                "data": {"player_id": player, "action": "ShuffledLibrary"}
+            }))
+            .unwrap()
+        };
+        let shuffled = game.state.players[0].library.clone();
+        game.keep_order_through_shuffles(&before, &[]);
+        game.keep_order_through_shuffles(&before, &[shuffle(1)]);
+        assert_eq!(
+            game.state.players[0].library, shuffled,
+            "seat 0 was not shuffled"
+        );
+        game.keep_order_through_shuffles(&before, &[shuffle(0)]);
+        let names = game.library_names();
+        // The draw prefix survives; the removed Alpha is the deepest one.
+        let expected = [
+            vec!["Alpha".to_owned(), "Beta".to_owned(), "Alpha".to_owned()],
+            vec!["Beta".to_owned(); 12],
+            vec!["Alpha".to_owned(); 17],
+        ]
+        .concat();
+        assert_eq!(names[0], expected);
+        assert_eq!(game.state.players[1].library, untouched);
+    }
+
+    #[test]
+    fn fitting_identity_ignores_only_the_cancelled_cast_guard() {
+        let runtime = runtime();
+        let (game, _) = runtime
+            .new_limited_game_for_fitting([deck(), deck()], [deck(), deck()], 0, 41)
+            .unwrap();
+        assert_eq!(
+            game.fitting_identity_json().unwrap(),
+            game.checkpoint_json().unwrap()
+        );
+        let mut cancelled = game.fork();
+        let card = cancelled.state.players[0].hand[0];
+        cancelled.state.cancelled_casts.push(card);
+        cancelled.state.cancelled_casts.push(card);
+        assert_ne!(
+            cancelled.checkpoint_json().unwrap(),
+            game.checkpoint_json().unwrap()
+        );
+        assert_eq!(
+            cancelled.fitting_identity_json().unwrap(),
+            game.fitting_identity_json().unwrap()
+        );
+        assert_eq!(cancelled.state.cancelled_casts, vec![card, card]);
+        let mut changed = cancelled.fork();
+        changed.state.players[1].life -= 1;
+        assert_ne!(
+            changed.fitting_identity_json().unwrap(),
+            game.fitting_identity_json().unwrap()
+        );
     }
 
     #[test]

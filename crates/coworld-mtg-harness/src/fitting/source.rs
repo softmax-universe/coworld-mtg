@@ -363,10 +363,43 @@ pub fn extract_game(
             }
         }
     }
-    for (name, n) in opponent_minimum {
-        decks[1].extend(std::iter::repeat_n(name, n));
+    // Order the hypothetical library by when each copy is first needed. Copies recorded
+    // as played or cast come first, in turn order, so the opening hand and early draws can
+    // supply them. A land copy that is in play without a recorded land play did not come
+    // from a land drop, so it goes to the bottom where a search effect can still find it.
+    let mut played = Vec::<(u32, String)>::new();
+    let mut lands_seen = BTreeSet::<String>::new();
+    for field in &fields {
+        let Some(key) = field.milestone.as_ref().filter(|k| k.observed_player == 1) else {
+            continue;
+        };
+        let Some(Value::Array(values)) = &field.expected else {
+            continue;
+        };
+        let listed = values.iter().filter_map(Value::as_str).map(str::to_owned);
+        match field.projection.as_deref() {
+            Some("land_played" | "creature_cast" | "instant_sorcery_cast") => {
+                played.extend(listed.map(|name| (order(key.turn_owner, key.turn_index), name)));
+            }
+            Some("lands") => lands_seen.extend(listed),
+            _ => {}
+        }
     }
-    if decks[1].len() > 40 {
+    played.sort();
+    let early = played.into_iter().map(|(_, name)| name).collect::<Vec<_>>();
+    let early_counts = counts(&early);
+    let (mut unordered, mut searched) = (Vec::new(), Vec::new());
+    for (name, n) in opponent_minimum {
+        let extra = n.saturating_sub(early_counts.get(&name).copied().unwrap_or(0));
+        let target = if lands_seen.contains(&name) {
+            &mut searched
+        } else {
+            &mut unordered
+        };
+        target.extend(std::iter::repeat_n(name, extra));
+    }
+    let known = early.len() + unordered.len() + searched.len();
+    if known > 40 {
         issue(
             &mut issues,
             IssueKind::UnsupportedInput,
@@ -374,7 +407,13 @@ pub fn extract_game(
             "observed minimum exceeds chosen forty-card setup".into(),
         );
     }
-    decks[1].resize(decks[1].len().max(40), opponent_filler.into());
+    decks[1].extend(early);
+    decks[1].extend(unordered);
+    decks[1].extend(std::iter::repeat_n(
+        opponent_filler.to_owned(),
+        40usize.saturating_sub(known),
+    ));
+    decks[1].extend(searched);
     let mut user_prefix = opening;
     for milestone in &milestones {
         for f in &fields {
@@ -403,8 +442,8 @@ pub fn extract_game(
         seed: game_index,
         schema: FIT_SCHEMA.into(), game_index, on_play, mulligans, source_sha256: crate::io::sha256(csv_bytes), cards_mapping_sha256: crate::io::sha256(mapping_bytes), fields, milestones, decks, libraries, issues,
         assumptions: vec![
-            "Official Arena IDs resolve to names in a pinned mapping; runtime matching is a name projection, not proof of unique token/face characteristics. One reconstructed hidden state: recorded user deck/opening multiset, chosen opening order and listed draw-prefix order, deterministic remaining library; no search over all shuffles.".into(),
-            format!("Hypothetical opponent: maximum observed name multiplicities plus {opponent_filler} to forty cards, in deterministic order; neither opponent deck nor opening hand is source-confirmed."),
+            "Official Arena IDs resolve to names in a pinned mapping; runtime matching is a name projection, not proof of unique token/face characteristics. One reconstructed hidden state: recorded user deck/opening multiset, chosen opening order and listed draw-prefix order, deterministic remaining library; an in-game shuffle keeps the remaining cards in that order; no search over all shuffles.".into(),
+            format!("Hypothetical opponent: maximum observed name multiplicities plus {opponent_filler} to forty cards, ordered by recorded play turn with unplayed lands at the bottom; neither opponent deck nor opening hand is source-confirmed."),
             "EOT fields project the last stable end-step state before a projection-neutral cleanup/turn transition; transitions with other pre-TurnStarted events are unsupported.".into(),
             "Runtime preflight checks names and setup only; it does not inventory every unsupported or unimplemented card effect. Blank cells are unknown. Nonblank card lists are multiset constraints; no global action order, targets, priority decisions, or hidden information is reconstructed as fact.".into(),
         ],
@@ -455,6 +494,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reversed.milestones[0].turn_owner, 1);
+    }
+    #[test]
+    fn opponent_library_supplies_played_cards_first_and_leaves_searched_lands_in_library() {
+        let mapping = b"id,name\n1,Island\n2,Plains\n3,Terramorphic Expanse\n4,Swamp\n";
+        let csv = b"on_play,num_mulligans,opp_num_mulligans,opening_hand,deck_Island,user_turn_1_eot_oppo_cards_in_hand,oppo_turn_1_lands_played,oppo_turn_1_eot_oppo_lands_in_play,oppo_turn_2_lands_played,oppo_turn_2_eot_oppo_lands_in_play\nTrue,0,0,1|1|1|1|1|1|1,40,7.0,3,3,1,1|4\n";
+        let input = extract_game(csv, mapping, 0, 2, "Plains").unwrap();
+        assert!(input.issues.is_empty(), "{:#?}", input.issues);
+        let library = &input.libraries[1];
+        assert_eq!(library.len(), 40);
+        assert_eq!(library[..2], ["Terramorphic Expanse", "Island"]);
+        assert_eq!(library.last().unwrap(), "Swamp");
+        assert_eq!(library.iter().filter(|name| *name == "Swamp").count(), 1);
     }
     #[test]
     fn retained_source_slice_preserves_actual_chronology_and_constraints() {
