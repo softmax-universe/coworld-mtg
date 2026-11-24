@@ -1,0 +1,42 @@
+{
+ "changed": [
+  "crates/coworld-mtg-harness/src/fitting/source.rs",
+  "crates/phase-bridge/src/fitting.rs"
+ ],
+ "claim": "Bounded compatibility on a previously inspected cohort; not a proof of rules correctness.",
+ "finished": "2026-11-24T04:24:30",
+ "improved": [
+  "sos-source-row-000011"
+ ],
+ "proposal": {
+  "component": "reconstruction",
+  "hypothesis": "Game 11 never reached its recorded turn-3 draw. The recording shows the user played Terramorphic Expanse on turn 1 (user_turn_1_eot_user_lands_in_play) and had a Forest instead by the opponent's turn 1 (oppo_turn_1_eot_user_lands_in_play), so the Expanse was sacrificed and the library shuffled. The setup fixes one hidden library order so that recorded draws come in recorded order (Applied Geometry, then Forest). But the in-game shuffle then used Phase's seeded RNG, which threw that order away, so the turn-3 draw came from an arbitrary permutation. The baseline's top rejections in game 11 were user_turn_3_cards_drawn (expected Forest, had Fractal Mascot) and the matching hand mismatches. The baseline evidence (result.json) shows the fetch followed by EffectResolved Shuffle and PlayerPerformedAction ShuffledLibrary. This was a problem in the reconstruction's hidden-state hypothesis, not an engine bug and not a budget problem.",
+  "issue_ids": [
+   "23104156bb9d9eb2"
+  ],
+  "risks": [
+   "It replaces Phase's seeded shuffle permutation with a chosen one for every shuffle submitted through the fitting path, including the opponent's hypothetical library. This is a hidden-state assumption, stated in the assumptions text, not something the recording proves.",
+   "Shuffle detection relies on the serialized PlayerPerformedAction/ShuffledLibrary event shape. If a future engine version reports shuffles differently, the code silently falls back to the RNG order.",
+   "Rewriting the library order after the engine shuffles assumes no other engine state depends on the post-shuffle order within the same action."
+  ],
+  "status": "propose",
+  "summary": "In phase-bridge fitting.rs, submit_for_fitting now records each library's name order before the action. When the action's events include PlayerPerformedAction ShuffledLibrary for a seat, it reorders that seat's library to follow the earlier name order. Same-named cards are treated as interchangeable, a card that left takes the deepest slot of its name, and cards that joined the library go to the bottom in Phase's order. Any order is a possible shuffle outcome, so this picks the outcome that agrees with the setup's existing draw-prefix hypothesis and invents no new card identities. Only explicit shuffle events trigger it, so effects that put cards on the bottom in random order are left alone. Updated the setup doc comment and the stated reconstruction assumption in source.rs. Added the unit test shuffles_keep_the_reconstructed_name_order_of_the_remaining_library.",
+  "validation": "./try (full cohort): build, format, lint and tests passed. Game 11 went from budget_exhausted 8/12 (10000 nodes) to matched_supported_projection 12/12 (2534 nodes). Every other game kept its status and milestone counts; game 2 used fewer nodes (2079 to 1833) and game 6 slightly more (472 to 480). Gate: passed True, improved 1, regressed 0. Game 18 is unchanged at budget_exhausted 10/12."
+ },
+ "reason": "Tests pass, at least one game improved, none regressed, and the reviewer approved.",
+ "regressed": [],
+ "review": {
+  "approve": true,
+  "findings": [
+   "The cause is credible: the setup's draw-prefix hypothesis was discarded by Phase's RNG at the Terramorphic Expanse shuffle, which explains the game 11 turn-3 draw and hand mismatches.",
+   "Choosing one shuffle outcome replaces one hidden-state hypothesis (the RNG permutation) with another, so it neither prunes searched lines nor contradicts a recorded observation, and the assumptions text now states it.",
+   "The change is generic, triggered only by explicit ShuffledLibrary events, and does not special-case game 11, Terramorphic Expanse, or any other card.",
+   "The reorder runs after the whole action, so if a draw or reveal happens after a shuffle within the same action, it still comes from the RNG order; this is a latent gap the code should note or guard against.",
+   "The node counts in the proposal (game 11 2534, game 2 1833, game 6 480) do not match the gate (2749, 1851, 464), so either the fitter is nondeterministic or the validation came from another revision; the status outcomes still agree.",
+   "Shuffles that happen outside `submit_for_fitting`, or that are reported in a different event shape, silently fall back to RNG order, so coverage may be partial but is never wrong-way."
+  ],
+  "model": "default",
+  "summary": "The fix targets the real cause: the reconstruction's draw-order hypothesis did not survive an in-game shuffle. It does this soundly, without weakening checks or inventing card identities, and the gate shows one newly matched game and no regressions. Approve, but flag the case of a draw after a shuffle within the same action, and reconcile the node counts the proposal reported with the gate's."
+ },
+ "verdict": "accepted"
+}

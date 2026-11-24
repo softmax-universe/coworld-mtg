@@ -1,0 +1,79 @@
+--- a/crates/coworld-mtg-harness/src/fitting/search.rs
++++ b/crates/coworld-mtg-harness/src/fitting/search.rs
+@@ -382,10 +382,11 @@
+ }
+ 
+ /// Identity of a search state: the complete engine state, including its RNG
+-/// stream, together with everything the observation checks still depend on.
++/// stream but not Phase's AI-only cancelled-cast guard, together with
++/// everything the observation checks still depend on.
+ fn search_state_key(game: &PhaseGame, progress: &Progress, next: usize) -> Option<[u8; 32]> {
+     let mut hasher = Sha256::new();
+-    hasher.update(game.checkpoint_json().ok()?.as_bytes());
++    hasher.update(game.fitting_identity_json().ok()?.as_bytes());
+     hasher.update(serde_json::to_vec(&(progress, next)).ok()?);
+     Some(hasher.finalize().into())
+ }
+--- a/crates/phase-bridge/src/fitting.rs
++++ b/crates/phase-bridge/src/fitting.rs
+@@ -193,6 +193,22 @@
+             state: self.state.clone(),
+             cards: self.cards.clone(),
+         }
++    }
++
++    /// Serialized identity of this state for recognizing a repeated search state.
++    ///
++    /// Phase records each cancelled cast in `cancelled_casts`, a guard against
++    /// its own AI looping cast→cancel→recast. No rules code or legal-action
++    /// listing reads it, and it clears on the next priority pass or land play,
++    /// so states differing only there offer the same actions and futures. With
++    /// it excluded, backing out of a cast returns to the state it left.
++    pub fn fitting_identity_json(&self) -> Result<String, BridgeError> {
++        if self.state.cancelled_casts.is_empty() {
++            return self.checkpoint_json();
++        }
++        let mut game = self.fork();
++        game.state.cancelled_casts.clear();
++        game.checkpoint_json()
+     }
+ 
+     fn pending_search(&self, seat: u8) -> Option<PendingSearch> {
+@@ -622,6 +638,37 @@
+     }
+ 
+     #[test]
++    fn fitting_identity_ignores_only_the_cancelled_cast_guard() {
++        let runtime = runtime();
++        let (game, _) = runtime
++            .new_limited_game_for_fitting([deck(), deck()], [deck(), deck()], 0, 41)
++            .unwrap();
++        assert_eq!(
++            game.fitting_identity_json().unwrap(),
++            game.checkpoint_json().unwrap()
++        );
++        let mut cancelled = game.fork();
++        let card = cancelled.state.players[0].hand[0];
++        cancelled.state.cancelled_casts.push(card);
++        cancelled.state.cancelled_casts.push(card);
++        assert_ne!(
++            cancelled.checkpoint_json().unwrap(),
++            game.checkpoint_json().unwrap()
++        );
++        assert_eq!(
++            cancelled.fitting_identity_json().unwrap(),
++            game.fitting_identity_json().unwrap()
++        );
++        assert_eq!(cancelled.state.cancelled_casts, vec![card, card]);
++        let mut changed = cancelled.fork();
++        changed.state.players[1].life -= 1;
++        assert_ne!(
++            changed.fitting_identity_json().unwrap(),
++            game.fitting_identity_json().unwrap()
++        );
++    }
++
++    #[test]
+     fn fitting_setup_rejects_incomplete_or_different_multisets_and_invalid_starter() {
+         let runtime = runtime();
+         for invalid in [vec!["Alpha".to_owned(); 40], vec!["Alpha".to_owned(); 39]] {

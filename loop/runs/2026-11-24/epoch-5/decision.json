@@ -1,0 +1,40 @@
+{
+ "changed": [
+  "crates/coworld-mtg-harness/src/fitting/search.rs"
+ ],
+ "claim": "Bounded compatibility on a previously inspected cohort; not a proof of rules correctness.",
+ "finished": "2026-11-24T05:37:08",
+ "improved": [
+  "sos-source-row-000010"
+ ],
+ "proposal": {
+  "component": "search",
+  "hypothesis": "The search compares an end-of-turn milestone only if every event between the last stable End state and the next TurnStarted is PriorityPassed or PhaseChanged. In real lines the engine also emits ManaPoolEmptied (unspent mana, with color/player_id/source_id) and DamageCleared (cleanup removing marked damage) there. Neither changes any field the EOT projection reads: life, hand, library or graveyard counts, battlefield names, or the per-turn drawn/land/cast lists. Mana spent is unsupported anyway. So every branch where a player left mana floating or a creature had been damaged was refused as unsupported_boundary without being compared. The baseline BRIEF shows this was the main rejection at the stuck milestone in games 1, 2, 10, 11, 12 and 13 (e.g. 1302x 'turn ended from phase End after [DamageCleared, DamageCleared]' in game 1).",
+  "issue_ids": [
+   "23104156bb9d9eb2"
+  ],
+  "risks": [
+   "If a future engine revision put state-changing information into ManaPoolEmptied or DamageCleared, the boundary would accept it silently. Today they only empty the mana pool and remove marked damage, and neither is projected.",
+   "Lifting the boundary refusal makes more branches reach full milestone comparison, so within the same node budget the search may explore in a different order. On this cohort no game regressed."
+  ],
+  "status": "propose",
+  "summary": "Added neutral_before_turn() in fitting/search.rs. It treats PriorityPassed, PhaseChanged, ManaPoolEmptied and DamageCleared as neutral before TurnStarted. Both the boundary check and the rejection subject use it. Any other cleanup event (a hand-size discard, a death, a life change, a trigger) still makes the boundary unsupported, and the End-phase and single-TurnStarted requirements are unchanged. Added the unit test cleanup_bookkeeping_is_neutral_at_the_turn_boundary, which checks that both bookkeeping events are accepted and that LifeChanged and CardDrawn are still refused.",
+  "validation": "./try (full cohort): build, format, lint and tests pass. passed: True; improved: 1; regressed: 0. Game 10 went from budget_exhausted 12/16 to 14/16 milestones; every other game is unchanged in status, milestones and node count. unsupported_boundary no longer appears in any game's top rejections; those branches are now compared against the recorded fields and show real mismatches instead (e.g. game 1: oppo_turn_4_eot_oppo_cards_in_hand expected 6, had 4)."
+ },
+ "reason": "Tests pass, at least one game improved, none regressed, and the reviewer approved.",
+ "regressed": [],
+ "review": {
+  "approve": true,
+  "findings": [
+   "The cause is real and general: `ManaPoolEmptied` and `DamageCleared` are routine cleanup bookkeeping, and refusing the boundary on them blocked comparison of otherwise valid lines.",
+   "Neither event changes life, zone counts, battlefield names or the per-turn drawn/land/cast lists, so comparing these branches does not reinterpret any recorded observation or fabricate hidden information.",
+   "The check is widened, not weakened: the End-phase requirement, the single-`TurnStarted` requirement and refusal on any other event (discard, death, life change, trigger) are unchanged, and admitted branches still face the full milestone comparison.",
+   "The boundary check and the rejection subject now share one predicate, and the rejection text was updated to match, so diagnostics stay honest.",
+   "The gate result plausibly follows: game 10 gains two milestones, no game changes status or node count, and former `unsupported_boundary` rejections now surface as concrete field mismatches.",
+   "I reviewed only the diff and the gate table, not the surrounding code, so the claim that no EOT projection reads mana-pool or marked-damage state is taken from the proposal; the allow-list would need revisiting if such a metric is added."
+  ],
+  "model": "default",
+  "summary": "The change fixes the stated cause with a small event-type allow-list that is not specific to any game or card, and it only lets more branches reach real comparison against recorded fields. The measured improvement is modest but consistent with the mechanism, with no regressions and all build, format, lint and test steps passing. Keep it."
+ },
+ "verdict": "accepted"
+}

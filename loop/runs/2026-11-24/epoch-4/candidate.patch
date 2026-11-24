@@ -1,0 +1,124 @@
+--- a/crates/coworld-mtg-harness/src/fitting/search.rs
++++ b/crates/coworld-mtg-harness/src/fitting/search.rs
+@@ -229,6 +229,50 @@
+     keys.sort_by_key(|k| (k.turn_index, k.turn_owner != starter, k.observed_player));
+     keys.dedup();
+     keys
++}
++
++/// The first enforced field of the current turn that its observation progress
++/// has already exceeded.
++///
++/// Within a turn the per-turn event lists only grow: `progress.events` is
++/// cleared only when a turn starts. Once a list holds more copies of a name
++/// than the recorded multiset, or more entries than a recorded count, no
++/// continuation of that turn can match the EOT comparison, so the branch can be
++/// rejected now instead of after exploring every remaining action in the turn.
++fn exceeded_turn_field<'a>(
++    input: &'a FitInput,
++    progress: &Progress,
++    owner: u8,
++) -> Option<(&'a SourceField, Value)> {
++    let index = progress.turns[owner as usize];
++    input.fields.iter().find_map(|field| {
++        let key = field.milestone.as_ref()?;
++        if field.disposition != FieldDisposition::Enforced
++            || key.turn_owner != owner
++            || key.turn_index != index
++        {
++            return None;
++        }
++        let expected = field.expected.as_ref()?;
++        let metric = field.projection.as_deref()?;
++        let seen = progress.list(key.observed_player, metric);
++        let exceeded = match metric {
++            "drawn"
++            | "land_played"
++            | "creature_cast"
++            | "non_creature_cast"
++            | "instant_sorcery_cast" => {
++                let allowed = expected.as_array()?;
++                seen.iter().any(|name| {
++                    seen.iter().filter(|n| *n == name).count()
++                        > allowed.iter().filter(|n| n.as_str() == Some(name)).count()
++                })
++            }
++            "drawn_or_tutored_count" => seen.len() as f64 > expected.as_f64()?,
++            _ => false,
++        };
++        exceeded.then(|| (field, serde_json::to_value(&seen).unwrap()))
++    })
+ }
+ 
+ fn matching(comparisons: &[TraceMilestone]) -> bool {
+@@ -866,6 +910,19 @@
+             }
+             continue;
+         }
++        if let Some((field, seen)) =
++            exceeded_turn_field(input, &progress, candidate.state().active_player.0)
++        {
++            count_rejection(
++                &mut tally,
++                next,
++                "exceeded_before_eot",
++                field.column.clone(),
++                field.expected.as_ref(),
++                Some(&seen),
++            );
++            continue;
++        }
+         let path = Some(Arc::new(RecordedStep {
+             previous: node.path.clone(),
+             transition,
+@@ -1028,6 +1085,50 @@
+             projection: Some(metric.into()),
+             expected: Some(expected),
+         }
++    }
++    #[test]
++    fn turn_progress_beyond_a_recorded_multiset_or_count_is_rejected_early() {
++        let key = |turn_owner, turn_index, observed_player| MilestoneKey {
++            turn_owner,
++            turn_index,
++            boundary: Boundary::EndOfTurn,
++            observed_player,
++        };
++        let mut input = input();
++        input.fields = vec![
++            field(
++                key(0, 2, 0),
++                "instant_sorcery_cast",
++                serde_json::json!(["Alpha", "Beta"]),
++            ),
++            field(key(0, 2, 1), "drawn_or_tutored_count", Value::from(1)),
++        ];
++        let mut unsupported = field(key(0, 2, 1), "land_played", serde_json::json!([]));
++        unsupported.disposition = FieldDisposition::Unsupported;
++        input.fields.push(unsupported);
++        let mut progress = Progress {
++            turns: [2, 1],
++            ..Default::default()
++        };
++        progress.add(0, "instant_sorcery_cast", "Beta".into());
++        progress.add(0, "instant_sorcery_cast", "Alpha".into());
++        progress.add(1, "drawn_or_tutored_count", "Gamma".into());
++        progress.add(1, "land_played", "Alpha".into());
++        // Matching so far, and unsupported fields never reject.
++        assert!(exceeded_turn_field(&input, &progress, 0).is_none());
++        let mut extra = progress.clone();
++        extra.add(0, "instant_sorcery_cast", "Beta".into());
++        let (field, seen) = exceeded_turn_field(&input, &extra, 0).unwrap();
++        assert_eq!(field.projection.as_deref(), Some("instant_sorcery_cast"));
++        assert_eq!(seen, serde_json::json!(["Beta", "Alpha", "Beta"]));
++        let mut drawn = progress.clone();
++        drawn.add(1, "drawn_or_tutored_count", "Gamma".into());
++        let (field, _) = exceeded_turn_field(&input, &drawn, 0).unwrap();
++        assert_eq!(field.projection.as_deref(), Some("drawn_or_tutored_count"));
++        // Only the active player's current turn is constrained.
++        assert!(exceeded_turn_field(&input, &extra, 1).is_none());
++        extra.turns[0] = 3;
++        assert!(exceeded_turn_field(&input, &extra, 0).is_none());
+     }
+     #[test]
+     fn known_compatible_trace_requires_backtracking_across_first_match() {

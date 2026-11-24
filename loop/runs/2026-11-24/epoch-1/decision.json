@@ -1,0 +1,46 @@
+{
+ "changed": [
+  "crates/coworld-mtg-harness/src/fitting/search.rs",
+  "crates/phase-bridge/src/fitting.rs"
+ ],
+ "claim": "Bounded compatibility on a previously inspected cohort; not a proof of rules correctness.",
+ "finished": "2026-11-24T03:28:08",
+ "improved": [
+  "sos-source-row-000006",
+  "sos-source-row-000008"
+ ],
+ "proposal": {
+  "component": "search",
+  "hypothesis": "Games 6 and 8 record the opponent playing Terramorphic Expanse and ending the turn with a basic land it fetched (game 8: lands_played [Terramorphic Expanse], lands_in_play [Island]). The reconstructed opponent library does contain that Island (at the bottom, by design). The fitter could still never choose it. When the ability resolves, Phase waits on SearchChoice {cards: [32 listed library cards], count: 1, allows_partial_find: true, constraint: None}, but Phase's legal-action list for that prompt offers only one representative SelectCards (the first listed card, card 54, a Plains, in the post-shuffle order) plus the empty selection. Temporary diagnostics in game 8 showed exactly two choices, [54] and [], at every Terramorphic resolution. PhaseGame::submit also rejects any selection not in that list. So every Terramorphic branch fetched a Plains or nothing, and game 8's search ran out of alternatives after 249 nodes. This is a gap in how the fitter enumerates actions: the search only explored the engine's sample answer, not every answer the pending choice admits. It is not a mismatch in the recording.",
+  "issue_ids": [
+   "56a2a7c0fbb7a8f3",
+   "23104156bb9d9eb2"
+  ],
+  "risks": [
+   "It assumes Phase's SearchChoice.cards is the already-filtered candidate set (for example only basic lands for Terramorphic Expanse). In game 8 every listed card was a basic land, consistent with that. If Phase ever listed non-matching cards with constraint None, a selection would be legal by the prompt but not by the card's text. Selections still go through Phase's apply and the invariant check.",
+   "These selections are answers the pending Phase prompt admits, not entries in Phase's legal_actions list. The fitter therefore no longer explores only the engine's offered actions, and a replay through the strict PhaseGame::submit (rather than submit_for_fitting) would reject such a witness step.",
+   "Treating same-named library cards as interchangeable (already assumed by the existing dedup) is now applied to searches too.",
+   "A search for several cards across many distinct names can add many branches. Unconstrained library searches in this cohort list few distinct names.",
+   "Not included, a separate finding: the EOT boundary check rejects End->TurnStarted transitions containing ManaPoolEmptied or DamageCleared (for example 83x DamageCleared in game 18). Neither changes a projected field. Relaxing it alone moved no game in try 001, so it was reverted to keep this change to one cause."
+  ],
+  "status": "propose",
+  "summary": "phase-bridge/src/fitting.rs: added PhaseGame::search_choice_selections(seat). For a pending SearchChoice owned by that seat whose constraint is None, it lists one SelectCards per multiset of card names drawn from Phase's own listed candidates, using the earliest listed copies. Sizes are exactly min(count, listed) or, if allows_partial_find, 0..=that. Also added PhaseGame::submit_for_fitting. It sends such a selection to Phase's apply only after checking it against the pending choice (distinct, listed, admitted size). Everything else still goes through the strict offered-action submit. Constrained searches are left to Phase's offered actions. search.rs: actions() merges these selections into the offered set, where the existing same-name library dedup applies. The search submits through submit_for_fitting, and invariants are still validated after every transition. Updated the result's search description to say so. Added three bridge unit tests: name-multiset enumeration (the last-listed Island is a separate answer, the other Plains are not), admission rules (unlisted, repeated, too many, empty only when partial finds are allowed, all-remaining when fewer than count), and that fitting submission outside a search stays restricted to offered actions.",
+  "validation": "Full ./try (try 004): build and all tests passed. Gate passed: improved 2, regressed 0. Game 08: unsupported_boundary 2/12 (249 nodes) -> matched_supported_projection 12/12 (84 nodes). Game 06: budget_exhausted 6/12 -> budget_exhausted 8/12 (10000 nodes). Game 02 is still matched 12/12 (1977 -> 1841 nodes). All other games are unchanged."
+ },
+ "reason": "Tests pass, at least one game improved, none regressed, and the reviewer approved.",
+ "regressed": [],
+ "review": {
+  "approve": true,
+  "findings": [
+   "The fix matches the claimed cause: it enumerates answers from the engine's own pending SearchChoice candidate list rather than only Phase's single representative, which directly explains game 8 going from a dead end at 249 nodes to 12/12.",
+   "It is general, not game- or card-specific: it keys only on prompt type, owner seat and constraint None, and no recorded observation, invariant or boundary check is touched.",
+   "submit_for_fitting bypasses the offered-action list only for selections that are distinct, listed and of an admitted size, but soundness still rests on the unverified assumption that Phase's SearchChoice.cards is already filtered to legal targets when constraint is None.",
+   "Witnesses that use these selections will not replay through the strict PhaseGame::submit, so any downstream replay or verifier must use submit_for_fitting; the updated search description does disclose the wider action set.",
+   "The gate's test step runs only `cargo test -p coworld-mtg-harness --lib`, so the three new phase-bridge unit tests are not shown to have run in the evidence given to me.",
+   "The proposal reports game 02 as 1977 -> 1841 nodes while the gate table shows 1973, a small reporting inconsistency that does not affect the outcome."
+  ],
+  "model": "default",
+  "summary": "Keep it, judged from the diff and gate evidence alone (I did not run anything): the change closes a real action-enumeration gap by drawing on the engine's own listed search candidates, and the game 8 and game 6 improvements plausibly follow with no check weakened or observation reinterpreted. Follow-ups: run the phase-bridge tests in the gate, and confirm that Phase pre-filters SearchChoice.cards when constraint is None."
+ },
+ "verdict": "accepted"
+}

@@ -105,6 +105,7 @@ These fixes have been merged back into `phase-rs/phase`:
 | Card support preflight | Checks names and setup. Complete card-effect, token and face identity checks are planned. |
 | Regression cases and repair evaluation | Implemented: typed case execution, checking, reduction and reviewed acceptance, orchestrated by agents. |
 | Whole improvement epoch as one program | Implemented in [CAOS](docs/caos-factory.md): acquisition, discovery, model proposals and reviews, candidate builds, comparison and a linked decision. |
+| The same epoch on one machine | Implemented in [`loop/`](loop/README.md): one command measures the cohort, briefs a model contributor, re-measures its change, gates and reviews it. No scheduler needed. |
 
 Some limits worth knowing before reading the results:
 
@@ -116,6 +117,10 @@ Some limits worth knowing before reading the results:
 - Combat-damage, mana-spent and ability observations are left unchecked where
   their meaning in the source data is not established. The raw data contains
   negative combat-damage values, for instance.
+- Run locally, the loop has [accepted five model-proposed changes in a row](loop/runs/2026-11-24/README.md).
+  At three turns per player, the eleven games without mulligans went from
+  seven matches to all eleven. At four turns, three match. Those runs used
+  public card data, not the private corpus.
 - In the [first full CAOS run](replays/caos-factory-20260920/README.md), the
   run pictured above, the model contributor looked at the evidence and chose to
   propose no change.
@@ -198,6 +203,7 @@ outcomes.
 | `phase-client/` | Thin Coworld transport, replay adapter and chrome over Phase's React client. New player, spectator and replay work belongs here. See the [client spec](docs/specs/0001-phase-client-for-coworld.md). |
 | `web/` | The improvement-loop viewer (`web/src/factory/`) and a legacy renderer kept only so version-2 replays stay readable. |
 | `caos-factory/` | The improvement epoch as a CAOS program. |
+| `loop/` | The same epoch as one local command, with its gate and policy. |
 | `replays/`, `cases/`, `fixtures/` | Recorded improvement runs, regression cases and frozen 17Lands cohorts. |
 
 [PLAN.md](PLAN.md) has the roadmap and the invariants the game server must

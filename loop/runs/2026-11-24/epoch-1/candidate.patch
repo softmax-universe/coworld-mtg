@@ -1,0 +1,243 @@
+--- a/crates/coworld-mtg-harness/src/fitting/search.rs
++++ b/crates/coworld-mtg-harness/src/fitting/search.rs
+@@ -279,6 +279,13 @@
+                 }
+             }
+         }
++        // Phase offers one representative answer to a library search; the
++        // pending choice itself admits any of its listed cards.
++        for action in game.search_choice_selections(seat) {
++            if !flat.contains(&action) {
++                flat.push(action);
++            }
++        }
+         // Copies sharing a name in a library are interchangeable. Offering each copy
+         // repeats one subtree per copy, so keep the first selection per name multiset.
+         let mut library_choices = std::collections::BTreeSet::new();
+@@ -459,7 +466,7 @@
+         seed: input.seed,
+         schema: FIT_SCHEMA.into(), status: FitStatus::InputIssue, nodes: 0, matched_prefix_backtracks: 0, elapsed_millis: 0, milestones_fitted: 0, milestones_total: input.milestones.len(), fully_covered_milestones: 0,
+         witness: vec![], duplicate_states: 0, rejections: vec![], trace: Some(FitTrace {schema:"coworld-17lands-fit-trace-v1".into(),path_kind:TracePathKind::NoExecution,initial_state:None,transitions:vec![],milestones:comparisons(None,None,input,&all_trace_keys(input),None),failure:None}), issues: input.issues.clone(), limits: limits.clone(), assumptions: input.assumptions.clone(),
+-        search: "Depth-first exact offered actions with cross-milestone backtracking; a branch reaching an engine state and observation progress already expanded is skipped; node and path-length limits count forced actions too; no completeness claim over hidden setups.".into(),
++        search: "Depth-first exact offered actions, plus every answer a pending unconstrained library search lists (one per name multiset), with cross-milestone backtracking; a branch reaching an engine state and observation progress already expanded is skipped; node and path-length limits count forced actions too; no completeness claim over hidden setups.".into(),
+         manifest_id: String::new(), phase_revision: phase_bridge::PHASE_REVISION.into(), source_sha256: input.source_sha256.clone(), cards_mapping_sha256: input.cards_mapping_sha256.clone(), input_sha256: String::new(),
+     };
+     if !input.issues.is_empty() {
+@@ -613,7 +620,7 @@
+         result.nodes += 1;
+         let mut candidate = node.game.fork();
+         let submission = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+-            candidate.submit(action.seat, action.action.clone())
++            candidate.submit_for_fitting(action.seat, action.action.clone())
+         }));
+         let events = match submission {
+             Ok(Ok(output)) => output.events,
+--- a/crates/phase-bridge/src/fitting.rs
++++ b/crates/phase-bridge/src/fitting.rs
+@@ -178,6 +178,14 @@
+     }
+ }
+ 
++/// A pending unconstrained library search owned by one seat: its listed
++/// candidates, how many to find, and whether finding fewer is permitted.
++struct PendingSearch {
++    cards: Vec<ObjectId>,
++    count: usize,
++    allows_partial_find: bool,
++}
++
+ impl PhaseGame {
+     /// Branch an authoritative search state, including its current RNG stream.
+     pub fn fork(&self) -> Self {
+@@ -185,6 +193,112 @@
+             state: self.state.clone(),
+             cards: self.cards.clone(),
+         }
++    }
++
++    fn pending_search(&self, seat: u8) -> Option<PendingSearch> {
++        let waiting = serde_json::to_value(&self.state.waiting_for).ok()?;
++        let data = waiting
++            .get("data")
++            .filter(|_| waiting["type"] == "SearchChoice")?;
++        // Only an unconstrained choice is fully described by its card list and
++        // count; any other constraint is left to Phase's own offered actions.
++        if data["player"].as_u64() != Some(u64::from(seat))
++            || data["constraint"]["type"] != "None"
++        {
++            return None;
++        }
++        Some(PendingSearch {
++            cards: serde_json::from_value(data["cards"].clone()).ok()?,
++            count: usize::try_from(data["count"].as_u64()?).ok()?,
++            allows_partial_find: data["allows_partial_find"].as_bool()?,
++        })
++    }
++
++    /// Every answer a pending unconstrained library search admits, one per
++    /// multiset of card names.
++    ///
++    /// Phase lists the search's candidate cards but offers a single
++    /// representative selection among them, so the remaining candidates are
++    /// unreachable through `legal_actions`. Same-named library cards are
++    /// interchangeable here, so each name multiset is selected once, using the
++    /// earliest listed copies.
++    pub fn search_choice_selections(&self, seat: u8) -> Vec<GameAction> {
++        let Some(search) = self.pending_search(seat) else {
++            return vec![];
++        };
++        let mut groups: Vec<(String, Vec<ObjectId>)> = vec![];
++        for id in &search.cards {
++            let Some(object) = self.state.objects.get(id) else {
++                return vec![];
++            };
++            match groups.iter_mut().find(|(name, _)| *name == object.name) {
++                Some((_, ids)) => ids.push(*id),
++                None => groups.push((object.name.clone(), vec![*id])),
++            }
++        }
++        let most = search.count.min(search.cards.len());
++        let fewest = if search.allows_partial_find { 0 } else { most };
++        let mut result = vec![];
++        for size in fewest..=most {
++            select_by_name(&groups, size, &mut vec![], &mut result);
++        }
++        result
++    }
++
++    /// Submit an offered action, or an answer `search_choice_selections` admits.
++    pub fn submit_for_fitting(
++        &mut self,
++        seat: u8,
++        action: GameAction,
++    ) -> Result<ActionResult, BridgeError> {
++        let admitted = match (&action, self.pending_search(seat)) {
++            (GameAction::SelectCards { cards }, Some(search)) => search.admits(cards),
++            _ => false,
++        };
++        if !admitted {
++            return self.submit(seat, action);
++        }
++        apply(&mut self.state, PlayerId(seat), action)
++            .map_err(|error| BridgeError::Action(error.to_string()))
++    }
++}
++
++impl PendingSearch {
++    /// Distinct listed cards, exactly as many as can be found unless the
++    /// search permits finding fewer.
++    fn admits(&self, selected: &[ObjectId]) -> bool {
++        let mut distinct = selected.to_vec();
++        distinct.sort_by_key(|id| id.0);
++        distinct.dedup();
++        distinct.len() == selected.len()
++            && selected.iter().all(|id| self.cards.contains(id))
++            && if self.allows_partial_find {
++                selected.len() <= self.count
++            } else {
++                selected.len() == self.count.min(self.cards.len())
++            }
++    }
++}
++
++fn select_by_name(
++    groups: &[(String, Vec<ObjectId>)],
++    size: usize,
++    chosen: &mut Vec<ObjectId>,
++    result: &mut Vec<GameAction>,
++) {
++    if size == 0 {
++        result.push(GameAction::SelectCards {
++            cards: chosen.clone(),
++        });
++        return;
++    }
++    let Some(((_, ids), rest)) = groups.split_first() else {
++        return;
++    };
++    for take in (0..=size.min(ids.len())).rev() {
++        chosen.extend(&ids[..take]);
++        select_by_name(rest, size - take, chosen, result);
++        chosen.truncate(chosen.len() - take);
+     }
+ }
+ 
+@@ -430,6 +544,78 @@
+     }
+ 
+     #[test]
++    fn search_selections_cover_each_name_multiset_once() {
++        let groups = vec![
++            ("Plains".to_owned(), vec![ObjectId(54), ObjectId(49), ObjectId(67)]),
++            ("Island".to_owned(), vec![ObjectId(81)]),
++        ];
++        let selections = |size| {
++            let mut result = vec![];
++            select_by_name(&groups, size, &mut vec![], &mut result);
++            result
++                .into_iter()
++                .map(|action| match action {
++                    GameAction::SelectCards { cards } => {
++                        cards.into_iter().map(|id| u64::from(id.0)).collect::<Vec<_>>()
++                    }
++                    other => panic!("unexpected {other:?}"),
++                })
++                .collect::<Vec<_>>()
++        };
++        assert_eq!(selections(0), vec![Vec::<u64>::new()]);
++        // The representative Phase offers is the first listed card; the Island
++        // listed last is a separate answer, and the other Plains are not.
++        assert_eq!(selections(1), vec![vec![54], vec![81]]);
++        assert_eq!(selections(2), vec![vec![54, 49], vec![54, 81]]);
++        assert_eq!(selections(4), vec![vec![54, 49, 67, 81]]);
++        assert!(selections(5).is_empty());
++    }
++
++    #[test]
++    fn search_answers_must_be_distinct_listed_cards_of_an_admitted_size() {
++        let search = |allows_partial_find| PendingSearch {
++            cards: vec![ObjectId(54), ObjectId(49), ObjectId(81)],
++            count: 1,
++            allows_partial_find,
++        };
++        let ids = |ids: &[u8]| ids.iter().map(|id| ObjectId((*id).into())).collect::<Vec<_>>();
++        for partial in [true, false] {
++            assert!(search(partial).admits(&ids(&[81])));
++            assert!(search(partial).admits(&ids(&[54])));
++            assert!(!search(partial).admits(&ids(&[7])), "unlisted card");
++            assert!(!search(partial).admits(&ids(&[54, 81])), "too many");
++        }
++        assert!(search(true).admits(&[]));
++        assert!(!search(false).admits(&[]));
++        let mut two = search(false);
++        two.count = 2;
++        assert!(!two.admits(&ids(&[54, 54])), "repeated card");
++        assert!(two.admits(&ids(&[54, 81])));
++        // A search for more than remain must find all that remain.
++        two.count = 5;
++        assert!(two.admits(&ids(&[54, 49, 81])));
++        assert!(!two.admits(&ids(&[54, 81])));
++    }
++
++    #[test]
++    fn fitting_submission_outside_a_search_stays_limited_to_offered_actions() {
++        let runtime = runtime();
++        let (mut game, _) = runtime
++            .new_limited_game_for_fitting([deck(), deck()], [deck(), deck()], 0, 41)
++            .unwrap();
++        assert!(game.search_choice_selections(0).is_empty());
++        let card = game.state().players[0].library[0];
++        let error = game
++            .submit_for_fitting(0, GameAction::SelectCards { cards: vec![card] })
++            .unwrap_err();
++        assert!(matches!(error, BridgeError::Action(_)), "{error:?}");
++        let keep = GameAction::MulliganDecision {
++            choice: MulliganChoice::Keep,
++        };
++        assert!(game.submit_for_fitting(0, keep).is_ok());
++    }
++
++    #[test]
+     fn fitting_setup_rejects_incomplete_or_different_multisets_and_invalid_starter() {
+         let runtime = runtime();
+         for invalid in [vec!["Alpha".to_owned(); 40], vec!["Alpha".to_owned(); 39]] {

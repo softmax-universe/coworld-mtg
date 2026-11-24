@@ -1,0 +1,49 @@
+{
+  "schema": "coworld/local-loop-policy@1",
+  "scope": "Bounded recorded-game compatibility under explicit reconstruction assumptions. No claim of full rules correctness.",
+  "cohort": "fixtures/17lands/sos-cohort-20",
+  "card_data": ".private/corpus/phase-card-data.json",
+  "card_set": "SOS",
+  "opponent_filler": "Plains",
+  "bounds": {
+    "turn_pairs": 4,
+    "nodes": 10000,
+    "max_actions": 256,
+    "deadline_seconds": 300,
+    "memory_bytes": 4294967296,
+    "concurrency": 4
+  },
+  "target": {
+    "allowed_paths": [
+      "crates/coworld-mtg-harness/src/fitting/source.rs",
+      "crates/coworld-mtg-harness/src/fitting/search.rs",
+      "crates/coworld-mtg-harness/src/fitting/trace.rs",
+      "crates/coworld-mtg-harness/src/fitting/mod.rs",
+      "crates/coworld-mtg-harness/src/invariants.rs",
+      "crates/phase-bridge/src/fitting.rs"
+    ],
+    "build_command": ["cargo", "build", "--release", "--locked", "-p", "coworld-mtg-harness"],
+    "binary": "release/coworld-mtg-harness",
+    "checks": [
+      {"name": "format", "argv": ["cargo", "fmt", "--all", "--", "--check"]},
+      {"name": "lint", "argv": ["cargo", "clippy", "--locked", "-p", "coworld-mtg-harness", "-p", "phase-bridge", "--all-targets", "--", "-D", "warnings"]},
+      {"name": "test", "argv": ["cargo", "test", "--locked", "-p", "coworld-mtg-harness", "-p", "phase-bridge", "--lib"]}
+    ]
+  },
+  "evaluation": {
+    "minimum_improved_cases": 1
+  },
+  "contributor": {
+    "kind": "claude-cli",
+    "model": null,
+    "timeout_seconds": 3600,
+    "max_budget_usd": 15
+  },
+  "reviewer": {
+    "kind": "claude-cli",
+    "model": null,
+    "fallback_models": ["claude-sonnet-5-5", null],
+    "timeout_seconds": 300,
+    "max_budget_usd": 3
+  }
+}

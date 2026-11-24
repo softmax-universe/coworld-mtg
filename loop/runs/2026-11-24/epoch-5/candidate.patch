@@ -1,0 +1,88 @@
+--- a/crates/coworld-mtg-harness/src/fitting/search.rs
++++ b/crates/coworld-mtg-harness/src/fitting/search.rs
+@@ -91,6 +91,21 @@
+         }
+         _ => {}
+     }
++}
++
++/// Events between the last stable End state and the next TurnStarted that
++/// cannot change any EOT projection: emptying mana pools and clearing marked
++/// damage touch neither life, zones, nor the per-turn event lists. Anything
++/// else (a cleanup discard, a death, a trigger) still makes the boundary
++/// unsupported.
++fn neutral_before_turn(event: &GameEvent) -> bool {
++    matches!(
++        event,
++        GameEvent::PriorityPassed { .. }
++            | GameEvent::PhaseChanged { .. }
++            | GameEvent::ManaPoolEmptied { .. }
++            | GameEvent::DamageCleared { .. }
++    )
+ }
+ 
+ fn actual(game: &PhaseGame, progress: &Progress, seat: u8, metric: &str) -> Option<Value> {
+@@ -787,12 +802,7 @@
+                 .filter(|e| matches!(e, GameEvent::TurnStarted { .. }))
+                 .count()
+                 == 1
+-                && events[..transition].iter().all(|event| {
+-                    matches!(
+-                        event,
+-                        GameEvent::PriorityPassed { .. } | GameEvent::PhaseChanged { .. }
+-                    )
+-                });
++                && events[..transition].iter().all(neutral_before_turn);
+             if !neutral || format!("{:?}", node.game.state().phase) != "End" {
+                 unsupported_boundary = true;
+                 reject = true;
+@@ -806,7 +816,7 @@
+                             .to_owned()
+                     })
+                     .collect::<Vec<_>>();
+-                rejection_detail=format!("The selected EOT projection requires a last stable End state followed by exactly one TurnStarted and only neutral PriorityPassed/PhaseChanged events before it. This branch had phase {:?}, {} TurnStarted event(s), and preceding event kinds {:?}; no boundary field actuals are claimed.",node.game.state().phase,events.iter().filter(|e|matches!(e,GameEvent::TurnStarted{..})).count(),preceding);
++                rejection_detail=format!("The selected EOT projection requires a last stable End state followed by exactly one TurnStarted and only neutral PriorityPassed/PhaseChanged/ManaPoolEmptied/DamageCleared events before it. This branch had phase {:?}, {} TurnStarted event(s), and preceding event kinds {:?}; no boundary field actuals are claimed.",node.game.state().phase,events.iter().filter(|e|matches!(e,GameEvent::TurnStarted{..})).count(),preceding);
+                 milestone_receipts =
+                     comparisons(None, None, input, &input.milestones[next..end], None);
+             } else {
+@@ -859,12 +869,7 @@
+                         .events
+                         .iter()
+                         .take_while(|e| !matches!(e, GameEvent::TurnStarted { .. }))
+-                        .filter(|e| {
+-                            !matches!(
+-                                e,
+-                                GameEvent::PriorityPassed { .. } | GameEvent::PhaseChanged { .. }
+-                            )
+-                        })
++                        .filter(|e| !neutral_before_turn(e))
+                         .map(|e| {
+                             serde_json::to_value(e).expect("serializable native event")["type"]
+                                 .as_str()
+@@ -1039,6 +1044,26 @@
+             choice: phase_bridge::MulliganChoice::Keep
+         }));
+         assert!(allowed_mulligan(&GameAction::PassPriority));
++    }
++    #[test]
++    fn cleanup_bookkeeping_is_neutral_at_the_turn_boundary() {
++        let event = |value: Value| -> GameEvent { serde_json::from_value(value).unwrap() };
++        for neutral in [
++            event(serde_json::json!({"type":"ManaPoolEmptied",
++                "data":{"color":"White","player_id":0,"source_id":3}})),
++            GameEvent::DamageCleared {
++                object_id: phase_bridge::ObjectId(3),
++            },
++        ] {
++            assert!(neutral_before_turn(&neutral), "{neutral:?}");
++        }
++        // Cleanup that changes life or zones still makes the boundary unsupported.
++        for changing in [
++            event(serde_json::json!({"type":"LifeChanged","data":{"player_id":0,"amount":-2}})),
++            event(serde_json::json!({"type":"CardDrawn","data":{"player_id":0,"object_id":3}})),
++        ] {
++            assert!(!neutral_before_turn(&changing), "{changing:?}");
++        }
+     }
+     #[test]
+     fn list_comparison_preserves_multiplicity() {

@@ -1,0 +1,166 @@
+--- a/crates/coworld-mtg-harness/src/fitting/source.rs
++++ b/crates/coworld-mtg-harness/src/fitting/source.rs
+@@ -442,7 +442,7 @@
+         seed: game_index,
+         schema: FIT_SCHEMA.into(), game_index, on_play, mulligans, source_sha256: crate::io::sha256(csv_bytes), cards_mapping_sha256: crate::io::sha256(mapping_bytes), fields, milestones, decks, libraries, issues,
+         assumptions: vec![
+-            "Official Arena IDs resolve to names in a pinned mapping; runtime matching is a name projection, not proof of unique token/face characteristics. One reconstructed hidden state: recorded user deck/opening multiset, chosen opening order and listed draw-prefix order, deterministic remaining library; no search over all shuffles.".into(),
++            "Official Arena IDs resolve to names in a pinned mapping; runtime matching is a name projection, not proof of unique token/face characteristics. One reconstructed hidden state: recorded user deck/opening multiset, chosen opening order and listed draw-prefix order, deterministic remaining library; an in-game shuffle keeps the remaining cards in that order; no search over all shuffles.".into(),
+             format!("Hypothetical opponent: maximum observed name multiplicities plus {opponent_filler} to forty cards, ordered by recorded play turn with unplayed lands at the bottom; neither opponent deck nor opening hand is source-confirmed."),
+             "EOT fields project the last stable end-step state before a projection-neutral cleanup/turn transition; transitions with other pre-TurnStarted events are unsupported.".into(),
+             "Runtime preflight checks names and setup only; it does not inventory every unsupported or unimplemented card effect. Blank cells are unknown. Nonblank card lists are multiset constraints; no global action order, targets, priority decisions, or hidden information is reconstructed as fact.".into(),
+--- a/crates/phase-bridge/src/fitting.rs
++++ b/crates/phase-bridge/src/fitting.rs
+@@ -47,7 +47,9 @@
+     ///
+     /// Phase still offers its normal mulligan choices. A fitter constrained by
+     /// recorded zero mulligans must admit only Phase's offered Keep decisions.
+-    /// Later shuffles and draws continue to use Phase's seeded RNG normally.
++    /// Draws and other random outcomes use Phase's seeded RNG normally, but a
++    /// shuffle submitted through `submit_for_fitting` keeps the remaining
++    /// cards in this order.
+     pub fn new_limited_game_for_fitting(
+         &self,
+         decks: [Vec<String>; 2],
+@@ -261,6 +263,9 @@
+     }
+ 
+     /// Submit an offered action, or an answer `search_choice_selections` admits.
++    ///
++    /// A library shuffle during the game keeps the reconstructed name order of
++    /// the cards that remain, as `keep_order_through_shuffles` describes.
+     pub fn submit_for_fitting(
+         &mut self,
+         seat: u8,
+@@ -270,11 +275,71 @@
+             (GameAction::SelectCards { cards }, Some(search)) => search.admits(cards),
+             _ => false,
+         };
+-        if !admitted {
+-            return self.submit(seat, action);
+-        }
+-        apply(&mut self.state, PlayerId(seat), action)
+-            .map_err(|error| BridgeError::Action(error.to_string()))
++        let before = self.library_names();
++        let result = if admitted {
++            apply(&mut self.state, PlayerId(seat), action)
++                .map_err(|error| BridgeError::Action(error.to_string()))?
++        } else {
++            self.submit(seat, action)?
++        };
++        self.keep_order_through_shuffles(&before, &result.events);
++        Ok(result)
++    }
++
++    fn library_names(&self) -> Vec<Vec<String>> {
++        self.state
++            .players
++            .iter()
++            .map(|player| {
++                player
++                    .library
++                    .iter()
++                    .map(|id| self.state.objects[id].name.clone())
++                    .collect()
++            })
++            .collect()
++    }
++
++    /// Reorder each library Phase shuffled so its cards follow the name order
++    /// it had before the action.
++    ///
++    /// The fitting setup fixes one hidden library order so recorded draws come
++    /// in recorded order. A shuffle's outcome is just as hidden, and Phase's
++    /// seeded permutation would discard that hypothesis for every later draw.
++    /// Any order is a possible shuffle outcome, so the reconstruction keeps the
++    /// one consistent with its setup: same-named cards are interchangeable,
++    /// cards that left take the deepest slot of their name, and cards that
++    /// joined the library go to the bottom in Phase's order.
++    fn keep_order_through_shuffles(&mut self, before: &[Vec<String>], events: &[GameEvent]) {
++        for event in events {
++            let value = serde_json::to_value(event).unwrap_or_default();
++            if value["type"] != "PlayerPerformedAction"
++                || value["data"]["action"] != "ShuffledLibrary"
++            {
++                continue;
++            }
++            let Some(seat) = value["data"]["player_id"].as_u64() else {
++                continue;
++            };
++            let (Some(player), Some(previous)) = (
++                self.state.players.get(seat as usize),
++                before.get(seat as usize),
++            ) else {
++                continue;
++            };
++            let mut pool = player.library.iter().copied().collect::<Vec<_>>();
++            let mut ordered = Vec::with_capacity(pool.len());
++            for name in previous {
++                if let Some(index) = pool
++                    .iter()
++                    .position(|id| self.state.objects[id].name == *name)
++                {
++                    ordered.push(pool.remove(index));
++                }
++            }
++            ordered.extend(pool);
++            self.state.players[seat as usize].library = ordered.into_iter().collect();
++        }
+     }
+ }
+ 
+@@ -638,6 +703,54 @@
+     }
+ 
+     #[test]
++    fn shuffles_keep_the_reconstructed_name_order_of_the_remaining_library() {
++        let runtime = runtime();
++        let ordered = [
++            vec!["Beta".to_owned(); 7],
++            vec!["Alpha".to_owned(), "Beta".to_owned(), "Alpha".to_owned()],
++            vec!["Beta".to_owned(); 12],
++            vec!["Alpha".to_owned(); 18],
++        ]
++        .concat();
++        let (mut game, _) = runtime
++            .new_limited_game_for_fitting([deck(), deck()], [ordered.clone(), deck()], 0, 41)
++            .unwrap();
++        let before = game.library_names();
++        assert_eq!(before[0], ordered[7..]);
++        // A search took the top Alpha, then Phase shuffled the rest.
++        let library = &mut game.state.players[0].library;
++        let mut rest = library.iter().copied().skip(1).collect::<Vec<_>>();
++        rest.reverse();
++        *library = rest.into_iter().collect();
++        let untouched = game.state.players[1].library.clone();
++        let shuffle = |player: u8| {
++            serde_json::from_value::<GameEvent>(serde_json::json!({
++                "type": "PlayerPerformedAction",
++                "data": {"player_id": player, "action": "ShuffledLibrary"}
++            }))
++            .unwrap()
++        };
++        let shuffled = game.state.players[0].library.clone();
++        game.keep_order_through_shuffles(&before, &[]);
++        game.keep_order_through_shuffles(&before, &[shuffle(1)]);
++        assert_eq!(
++            game.state.players[0].library, shuffled,
++            "seat 0 was not shuffled"
++        );
++        game.keep_order_through_shuffles(&before, &[shuffle(0)]);
++        let names = game.library_names();
++        // The draw prefix survives; the removed Alpha is the deepest one.
++        let expected = [
++            vec!["Alpha".to_owned(), "Beta".to_owned(), "Alpha".to_owned()],
++            vec!["Beta".to_owned(); 12],
++            vec!["Alpha".to_owned(); 17],
++        ]
++        .concat();
++        assert_eq!(names[0], expected);
++        assert_eq!(game.state.players[1].library, untouched);
++    }
++
++    #[test]
+     fn fitting_identity_ignores_only_the_cancelled_cast_guard() {
+         let runtime = runtime();
+         let (game, _) = runtime

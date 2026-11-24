@@ -1,0 +1,44 @@
+{
+ "changed": [
+  "crates/coworld-mtg-harness/src/fitting/search.rs",
+  "crates/phase-bridge/src/fitting.rs"
+ ],
+ "claim": "Bounded compatibility on a previously inspected cohort; not a proof of rules correctness.",
+ "finished": "2026-11-24T04:03:16",
+ "improved": [
+  "sos-source-row-000006",
+  "sos-source-row-000011"
+ ],
+ "proposal": {
+  "component": "search",
+  "hypothesis": "The search's repeated-state check never recognized a cast that was backed out. In game 18's baseline evidence, the retained action_budget branch spends ~90 of its 256 actions repeating CastSpell(object 15) -> CancelCast; CancelCast sorts before the target choices, so depth-first search re-enters the same cast forever. search_state_key hashes Phase's full checkpoint, and Phase's handle_cancel_cast (engine casting.rs) pushes the object onto GameState.cancelled_casts every time, so each round trip yields a new key. That field is documented as an AI guard against cast->cancel->recast loops. No rules code or legal_actions_for_viewer reads it (the only readers are phase-ai and tests), and it clears on PassPriority/PlayLand. So states that differ only there have the same legal actions and futures, and the search was spending its node and action budget on duplicates.",
+  "issue_ids": [
+   "23104156bb9d9eb2"
+  ],
+  "risks": [
+   "If a future Phase revision begins reading cancelled_casts in rules or legal-action code, ignoring it in the identity could merge states that are really different; the doc comment and unit test record the assumption.",
+   "Node counts are not exactly reproducible across runs (game 6 took 472 vs 460 nodes; game 2 went from 1839 to 1851), which suggests some nondeterminism elsewhere. Outcomes did not change.",
+   "This does not fix the unsupported_boundary refusals (ManaPoolEmptied/DamageCleared before TurnStarted) that still limit games 11 and 18."
+  ],
+  "status": "propose",
+  "summary": "Added PhaseGame::fitting_identity_json in phase-bridge/src/fitting.rs. It serializes the checkpoint with cancelled_casts cleared, on a fork, only when that list is non-empty. search_state_key in fitting/search.rs now hashes this instead of checkpoint_json, so a cancelled cast returns to its already-visited state and is skipped as a duplicate. Engine state, the RNG stream, observation progress and every milestone check are unchanged. Added the unit test fitting_identity_ignores_only_the_cancelled_cast_guard: the identity ignores cancelled_casts, the raw checkpoint still differs, the game's own state is untouched, and a real state change (life) still changes the identity.",
+  "validation": "./try (full cohort): build, format, lint and tests passed; passed: True; improved: 2; regressed: 0. Game 6: budget_exhausted 8/12 at 10000 nodes -> matched_supported_projection 12/12 at 460 nodes (newly matched). Game 11: budget_exhausted 6/12 -> 8/12 (matched more milestones). Game 18 stays at 10/12 (budget_exhausted). All 8 previously matched games still match. Game 2 rose from 1839 to 1851 nodes; game 6 took 472 nodes in the subset run and 460 in the full run."
+ },
+ "reason": "Tests pass, at least one game improved, none regressed, and the reviewer approved.",
+ "regressed": [],
+ "review": {
+  "approve": true,
+  "findings": [
+   "The cause is concrete: Phase's handle_cancel_cast pushes onto cancelled_casts each round trip, so every cast->cancel cycle yielded a fresh hash and defeated duplicate detection.",
+   "The claim that no rules or legal-action code reads cancelled_casts is stated but I did not verify it here; the doc comment and test only record that assumption.",
+   "The change is narrow: only that one field is cleared, on a fork, so engine state, RNG, and observation progress are untouched and no recorded observation is reinterpreted.",
+   "Merging states that differ only in an AI-loop guard is sound pruning as long as legal actions and futures are identical, and the progress/next components remain in the key.",
+   "The unit test covers that the identity ignores cancelled_casts, the raw checkpoint still differs, the game is not mutated, and a real change (life) still changes the identity.",
+   "Results follow plausibly: game 6 went from budget exhaustion to a match at ~470 nodes, game 11 gained milestones, and no game regressed or lost its match.",
+   "There is no card- or game-specific logic; the node-count jitter (game 2 at 1839, 1851 and 1880) is a minor unexplained nondeterminism that did not change any outcome."
+  ],
+  "model": "claude-sonnet-5-5",
+  "summary": "The change fixes a real duplicate-state blind spot by excluding an AI-only loop guard from the search identity, with no weakening of checks or special-casing. The improvements on games 6 and 11 are consistent with removing repeated cast/cancel cycles, and nothing regressed. The main residual risk is a future Phase revision reading cancelled_casts in rules code, which the test and comment flag."
+ },
+ "verdict": "accepted"
+}

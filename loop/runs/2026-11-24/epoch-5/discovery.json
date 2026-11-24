@@ -1,0 +1,149 @@
+{
+ "counts": {
+  "budget_exhausted": 8,
+  "input_issue": 9,
+  "matched_supported_projection": 3
+ },
+ "issues": [
+  {
+   "cases": [
+    "sos-source-row-000001",
+    "sos-source-row-000002",
+    "sos-source-row-000003",
+    "sos-source-row-000004",
+    "sos-source-row-000006",
+    "sos-source-row-000008",
+    "sos-source-row-000010",
+    "sos-source-row-000011",
+    "sos-source-row-000012",
+    "sos-source-row-000013",
+    "sos-source-row-000018"
+   ],
+   "cause": "ability_identity_unbound",
+   "columns": [
+    "user_abilities",
+    "oppo_abilities"
+   ],
+   "id": "b75b0b894cc203e0",
+   "kind": "unsupported_projection"
+  },
+  {
+   "cases": [
+    "sos-source-row-000001",
+    "sos-source-row-000002",
+    "sos-source-row-000003",
+    "sos-source-row-000004",
+    "sos-source-row-000006",
+    "sos-source-row-000008",
+    "sos-source-row-000010",
+    "sos-source-row-000011",
+    "sos-source-row-000012",
+    "sos-source-row-000013",
+    "sos-source-row-000018"
+   ],
+   "cause": "unsupported_source_projection",
+   "columns": [
+    "creatures_attacked",
+    "creatures_unblocked",
+    "non_creatures_cast",
+    "creatures_blocked",
+    "creatures_blocking",
+    "user_creatures_killed_combat",
+    "oppo_creatures_killed_combat",
+    "oppo_creatures_killed_non_combat"
+   ],
+   "id": "bcf321d5cb8b5ab5",
+   "kind": "unsupported_projection"
+  },
+  {
+   "cases": [
+    "sos-source-row-000001",
+    "sos-source-row-000002",
+    "sos-source-row-000003",
+    "sos-source-row-000004",
+    "sos-source-row-000006",
+    "sos-source-row-000008",
+    "sos-source-row-000010",
+    "sos-source-row-000011",
+    "sos-source-row-000012",
+    "sos-source-row-000013",
+    "sos-source-row-000018"
+   ],
+   "cause": "mana_payment_observation_incomplete",
+   "columns": [
+    "oppo_mana_spent",
+    "user_mana_spent"
+   ],
+   "id": "cac272990725a464",
+   "kind": "unsupported_projection"
+  },
+  {
+   "cases": [
+    "sos-source-row-000001",
+    "sos-source-row-000002",
+    "sos-source-row-000003",
+    "sos-source-row-000004",
+    "sos-source-row-000006",
+    "sos-source-row-000008",
+    "sos-source-row-000010",
+    "sos-source-row-000011",
+    "sos-source-row-000012",
+    "sos-source-row-000013",
+    "sos-source-row-000018"
+   ],
+   "cause": "combat_source_aggregation_unverified",
+   "columns": [
+    "oppo_combat_damage_taken",
+    "user_combat_damage_taken"
+   ],
+   "id": "dbfdcf7d182a17eb",
+   "kind": "unsupported_projection"
+  },
+  {
+   "cases": [
+    "sos-source-row-000000",
+    "sos-source-row-000005",
+    "sos-source-row-000007",
+    "sos-source-row-000009",
+    "sos-source-row-000014",
+    "sos-source-row-000015",
+    "sos-source-row-000016",
+    "sos-source-row-000017",
+    "sos-source-row-000019"
+   ],
+   "cause": "first supported slice requires both recorded mulligan counts to be explicitly zero",
+   "columns": [
+    "num_mulligans/opp_num_mulligans"
+   ],
+   "id": "f47b68143222b582",
+   "kind": "unsupported_input"
+  },
+  {
+   "cases": [
+    "sos-source-row-000001",
+    "sos-source-row-000002",
+    "sos-source-row-000006",
+    "sos-source-row-000010",
+    "sos-source-row-000011",
+    "sos-source-row-000012",
+    "sos-source-row-000013",
+    "sos-source-row-000018"
+   ],
+   "cause": "No complete supported-projection witness was found in the recorded bounded search and single reconstructed setup; this does not establish a rules discrepancy or global unreachability.",
+   "columns": [],
+   "id": "23104156bb9d9eb2",
+   "kind": "budget_exhausted"
+  },
+  {
+   "cases": [
+    "sos-source-row-000003",
+    "sos-source-row-000004",
+    "sos-source-row-000008"
+   ],
+   "cause": "The witness leaves some recorded fields unchecked.",
+   "columns": [],
+   "id": "71e217be2e55fe84",
+   "kind": "partial_projection"
+  }
+ ]
+}
