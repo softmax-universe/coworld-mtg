@@ -89,6 +89,13 @@ fn observe(game: &PhaseGame, event: &GameEvent, progress: &mut Progress) {
                 progress.add(controller.0, kind, o.name.clone());
             }
         }
+        GameEvent::AttackersDeclared { attacker_ids, .. } => {
+            for id in attacker_ids {
+                if let Some(o) = game.state().objects.get(id) {
+                    progress.add(o.controller.0, "attacked", o.name.clone());
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -146,7 +153,8 @@ fn actual(game: &PhaseGame, progress: &Progress, seat: u8, metric: &str) -> Opti
         | "land_played"
         | "creature_cast"
         | "non_creature_cast"
-        | "instant_sorcery_cast" => serde_json::to_value(progress.list(seat, metric)).unwrap(),
+        | "instant_sorcery_cast"
+        | "attacked" => serde_json::to_value(progress.list(seat, metric)).unwrap(),
         _ => return None,
     })
 }
@@ -276,7 +284,8 @@ fn exceeded_turn_field<'a>(
             | "land_played"
             | "creature_cast"
             | "non_creature_cast"
-            | "instant_sorcery_cast" => {
+            | "instant_sorcery_cast"
+            | "attacked" => {
                 let allowed = expected.as_array()?;
                 seen.iter().any(|name| {
                     seen.iter().filter(|n| *n == name).count()
@@ -459,9 +468,18 @@ fn sort_object_keys(value: &mut Value) {
 }
 
 fn search_state_key(game: &PhaseGame, progress: &Progress, next: usize) -> Option<[u8; 32]> {
+    identity_key(&game.fitting_identity_json().ok()?, progress, next)
+}
+
+/// `search_state_key` over the identity that ignores a cancelled cast's records.
+fn cancelled_cast_key(game: &PhaseGame, progress: &Progress, next: usize) -> Option<[u8; 32]> {
+    identity_key(&game.cancelled_cast_identity_json().ok()?, progress, next)
+}
+
+fn identity_key(identity: &str, progress: &Progress, next: usize) -> Option<[u8; 32]> {
     // Phase keeps some state in hash maps, whose serialized key order changes
     // from run to run. Hash a key-sorted form so equal states get equal keys.
-    let mut identity: Value = serde_json::from_str(&game.fitting_identity_json().ok()?).ok()?;
+    let mut identity: Value = serde_json::from_str(identity).ok()?;
     sort_object_keys(&mut identity);
     let mut hasher = Sha256::new();
     hasher.update(serde_json::to_vec(&identity).ok()?);
@@ -477,6 +495,8 @@ struct Node {
     path: Option<Arc<RecordedStep>>,
     choices: Vec<FitAction>,
     cursor: usize,
+    /// `cancelled_cast_key` of this node, computed when a cancel first asks.
+    cancelled_cast_key: Option<Option<[u8; 32]>>,
 }
 impl Node {
     fn new(
@@ -496,8 +516,35 @@ impl Node {
             path,
             choices,
             cursor: 0,
+            cancelled_cast_key: None,
         }
     }
+}
+
+/// Whether the state a `CancelCast` produced is one the current path already
+/// holds, apart from the records a cancelled cast leaves behind.
+///
+/// Backing out of a cast is not a game event: it returns to the state the cast
+/// began from, which is still on the stack with its untried alternatives.
+/// Phase keeps a journal of the abandoned announcement, so the exact state key
+/// never recognizes that return, and a search that expands it can announce and
+/// cancel the same spell until the action limit. Anything else the cast
+/// changed, such as a land tapped for mana, still makes a new state.
+fn cancel_returns_to_path(
+    stack: &mut [Node],
+    game: &PhaseGame,
+    progress: &Progress,
+    next: usize,
+) -> bool {
+    let Some(key) = cancelled_cast_key(game, progress, next) else {
+        return false;
+    };
+    stack.iter_mut().any(|node| {
+        let known = node
+            .cancelled_cast_key
+            .get_or_insert_with(|| cancelled_cast_key(&node.game, &node.progress, node.next));
+        *known == Some(key)
+    })
 }
 
 pub fn search_game(
@@ -545,7 +592,7 @@ pub fn search_game(
         seed: input.seed,
         schema: FIT_SCHEMA.into(), status: FitStatus::InputIssue, nodes: 0, matched_prefix_backtracks: 0, elapsed_millis: 0, milestones_fitted: 0, milestones_total: input.milestones.len(), fully_covered_milestones: 0,
         witness: vec![], duplicate_states: 0, rejections: vec![], trace: Some(FitTrace {schema:"coworld-17lands-fit-trace-v1".into(),path_kind:TracePathKind::NoExecution,initial_state:None,transitions:vec![],milestones:comparisons(None,None,input,&all_trace_keys(input),None),failure:None}), issues: input.issues.clone(), limits: limits.clone(), assumptions: input.assumptions.clone(),
-        search: "Depth-first exact offered actions, plus every answer a pending unconstrained library search lists (one per name multiset), with cross-milestone backtracking; a branch reaching an engine state and observation progress already expanded is skipped; node and path-length limits count forced actions too; no completeness claim over hidden setups.".into(),
+        search: "Depth-first exact offered actions, plus every answer a pending unconstrained library search lists (one per name multiset), with cross-milestone backtracking; a branch reaching an engine state and observation progress already expanded is skipped, as is a cancelled cast that returns to a state on its own path apart from Phase's record of the abandoned announcement; node and path-length limits count forced actions too; no completeness claim over hidden setups.".into(),
         manifest_id: String::new(), phase_revision: phase_bridge::PHASE_REVISION.into(), source_sha256: input.source_sha256.clone(), cards_mapping_sha256: input.cards_mapping_sha256.clone(), input_sha256: String::new(),
     };
     if !input.issues.is_empty() {
@@ -980,6 +1027,12 @@ pub fn search_game(
             result.duplicate_states += 1;
             continue;
         }
+        if matches!(trace.last(), Some(last) if last.action == GameAction::CancelCast)
+            && cancel_returns_to_path(&mut stack, &candidate, &progress, next)
+        {
+            result.duplicate_states += 1;
+            continue;
+        }
         stack.push(Node::new(candidate, progress, next, trace, path, input));
     }
     if result.status != FitStatus::MatchedSupportedProjection {
@@ -1173,6 +1226,108 @@ mod witness_tests {
         assert!(exceeded_turn_field(&input, &extra, 1).is_none());
         extra.turns[0] = 3;
         assert!(exceeded_turn_field(&input, &extra, 0).is_none());
+    }
+    #[test]
+    fn declared_attackers_project_by_controller_and_reject_extra_attacks() {
+        let runtime = runtime();
+        let mut input = input();
+        let (game, _) = runtime
+            .new_limited_game_for_fitting(input.decks.clone(), input.libraries.clone(), 0, 0)
+            .unwrap();
+        let gamma = |seat: u8| {
+            game.state()
+                .objects
+                .iter()
+                .find(|(_, o)| o.name == "Gamma" && o.controller.0 == seat)
+                .map(|(id, _)| *id)
+                .unwrap()
+        };
+        let declared = |ids: Vec<phase_bridge::ObjectId>| -> GameEvent {
+            serde_json::from_value(serde_json::json!({"type":"AttackersDeclared","data":{
+                "attacker_ids":ids,"defending_player":1,"attacks":[],"declaration_records":[]}}))
+            .unwrap()
+        };
+        let mut progress = Progress {
+            turns: [2, 1],
+            ..Default::default()
+        };
+        observe(&game, &declared(vec![]), &mut progress);
+        assert_eq!(
+            actual(&game, &progress, 0, "attacked"),
+            Some(serde_json::json!([]))
+        );
+        observe(&game, &declared(vec![gamma(0)]), &mut progress);
+        assert_eq!(
+            actual(&game, &progress, 0, "attacked"),
+            Some(serde_json::json!(["Gamma"]))
+        );
+        assert_eq!(
+            actual(&game, &progress, 1, "attacked"),
+            Some(serde_json::json!([]))
+        );
+        input.fields = vec![field(
+            MilestoneKey {
+                turn_owner: 0,
+                turn_index: 2,
+                boundary: Boundary::EndOfTurn,
+                observed_player: 0,
+            },
+            "attacked",
+            serde_json::json!(["Gamma"]),
+        )];
+        assert!(exceeded_turn_field(&input, &progress, 0).is_none());
+        // A second combat that attacks with it again exceeds the recorded multiset.
+        observe(&game, &declared(vec![gamma(0)]), &mut progress);
+        let (field, seen) = exceeded_turn_field(&input, &progress, 0).unwrap();
+        assert_eq!(field.projection.as_deref(), Some("attacked"));
+        assert_eq!(seen, serde_json::json!(["Gamma", "Gamma"]));
+    }
+    #[test]
+    fn a_cancelled_cast_returns_to_a_state_on_the_path_despite_its_journal() {
+        let runtime = runtime();
+        let input = input();
+        let (game, _) = runtime
+            .new_limited_game_for_fitting(input.decks.clone(), input.libraries.clone(), 0, 0)
+            .unwrap();
+        // Restore edited checkpoints: the same position with and without the
+        // announcement number a cancelled cast consumes, and a different one.
+        let checkpoint: Value = serde_json::from_str(&game.checkpoint_json().unwrap()).unwrap();
+        let restore = |edit: &dyn Fn(&mut Value)| {
+            let mut edited = checkpoint.clone();
+            edit(&mut edited);
+            runtime.restore_game(&edited.to_string()).unwrap()
+        };
+        let announce = |value: &mut Value| {
+            let number = &mut value["state"]["next_spell_announcement"];
+            *number = Value::from(number.as_u64().unwrap() + 2);
+        };
+        let began = restore(&|_| {});
+        let cancelled = restore(&announce);
+        let other = restore(&|value| {
+            announce(value);
+            value["state"]["players"][1]["life"] = Value::from(19);
+        });
+        let progress = Progress {
+            turns: [1, 0],
+            ..Default::default()
+        };
+        assert_ne!(
+            search_state_key(&cancelled, &progress, 0),
+            search_state_key(&began, &progress, 0),
+            "the exact key tells the two apart"
+        );
+        let mut stack = vec![Node::new(began, progress.clone(), 0, vec![], None, &input)];
+        assert!(cancel_returns_to_path(&mut stack, &cancelled, &progress, 0));
+        assert!(stack[0].cancelled_cast_key.is_some_and(|key| key.is_some()));
+        // A different engine state, observation progress or milestone is new.
+        assert!(!cancel_returns_to_path(&mut stack, &other, &progress, 0));
+        let mut drew = progress.clone();
+        drew.add(0, "drawn", "Alpha".into());
+        assert!(!cancel_returns_to_path(&mut stack, &cancelled, &drew, 0));
+        assert!(!cancel_returns_to_path(
+            &mut stack, &cancelled, &progress, 1
+        ));
+        assert!(!cancel_returns_to_path(&mut [], &cancelled, &progress, 0));
     }
     #[test]
     fn known_compatible_trace_requires_backtracking_across_first_match() {

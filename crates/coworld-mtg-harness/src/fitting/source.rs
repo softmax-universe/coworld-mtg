@@ -112,6 +112,8 @@ fn projection(owner: u8, suffix: &str) -> Option<(u8, &'static str, bool)> {
             "cards_drawn_or_tutored" => Some((owner, "drawn_or_tutored_count", false)),
             "lands_played" => Some((owner, "land_played", true)),
             "creatures_cast" => Some((owner, "creature_cast", true)),
+            // Only the active player declares attackers, so the family belongs to the turn owner.
+            "creatures_attacked" => Some((owner, "attacked", true)),
             // Official helper gives the type but not whether this family excludes instants/sorceries.
             "non_creatures_cast" => None,
             "user_instants_sorceries_cast" => Some((0, "instant_sorcery_cast", true)),
@@ -602,6 +604,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn creatures_attacked_is_a_turn_owner_name_multiset() {
+        for (column, owner) in [
+            ("user_turn_1_creatures_attacked", 0),
+            ("oppo_turn_1_creatures_attacked", 1),
+        ] {
+            let input = extract_game(
+                &sample(column, "2|2", "True", "0"),
+                mapping_bytes(),
+                0,
+                1,
+                "Plains",
+            )
+            .unwrap();
+            let field = input.fields.iter().find(|f| f.column == column).unwrap();
+            assert_eq!(field.disposition, FieldDisposition::Enforced);
+            assert_eq!(field.projection.as_deref(), Some("attacked"));
+            assert_eq!(
+                field.expected,
+                Some(serde_json::json!(["Plains", "Plains"]))
+            );
+            let key = field.milestone.as_ref().unwrap();
+            assert_eq!((key.turn_owner, key.observed_player), (owner, owner));
+        }
+        // Blockers and unblocked attackers keep no projection.
+        let input = extract_game(
+            &sample("user_turn_1_creatures_unblocked", "2", "True", "0"),
+            mapping_bytes(),
+            0,
+            1,
+            "Plains",
+        )
+        .unwrap();
+        let field = input
+            .fields
+            .iter()
+            .find(|f| f.column == "user_turn_1_creatures_unblocked")
+            .unwrap();
+        assert_eq!(field.disposition, FieldDisposition::Unsupported);
+    }
     #[test]
     fn ambiguous_mapping_and_blanks_remain_visible() {
         let bytes = sample("user_turn_1_cards_drawn", "999", "True", "0");
