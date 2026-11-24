@@ -1,3 +1,7 @@
+// Phase state types nest deeply enough to exceed the default limit when the
+// compiler proves a future holding them is `Send`.
+#![recursion_limit = "512"]
+
 mod assets;
 mod config;
 mod corpus;

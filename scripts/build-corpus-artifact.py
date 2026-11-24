@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 
 SCHEMA = "coworld-mtg-corpus-v1"
-PHASE_REVISION = "54227f4527a0b45b01eb3f819d262ee49b665810"
+PHASE_REVISION = "d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4"
 CORPUS_FILES = (
     "phase-card-data.json",
     "decks/fractal_convergence.json",

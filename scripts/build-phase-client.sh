@@ -8,7 +8,7 @@ CHECKOUT="$ROOT/tmp/phase-client-$PHASE_REVISION"
 if [[ ! -d "$CHECKOUT/.git" ]]; then
   mkdir -p "$CHECKOUT"
   git -C "$CHECKOUT" init
-  git -C "$CHECKOUT" remote add origin https://github.com/nishu-builder/phase.git
+  git -C "$CHECKOUT" remote add origin https://github.com/phase-rs/phase.git
 fi
 
 if [[ $(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || true) != "$PHASE_REVISION" ]]; then
@@ -37,7 +37,7 @@ git -C "$CHECKOUT" apply "$PHASE_PATCH"
 
 corepack pnpm@10.28.2 --dir "$CHECKOUT/client" install --frozen-lockfile
 if [[ ${PHASE_CLIENT_SKIP_TESTS:-0} != 1 ]]; then
-  corepack pnpm@10.28.2 --dir "$CHECKOUT/client" exec vitest run \
+  corepack pnpm@10.28.2 --dir "$CHECKOUT/client" exec vitest run --coverage.enabled=false \
     src/coworld/coworld-ws-adapter.test.ts \
     src/coworld/coworld-chrome.test.tsx
 fi

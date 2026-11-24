@@ -107,7 +107,11 @@ impl PhaseRuntime {
             },
             ..PhaseDeckList::default()
         };
-        let payload = resolve_deck_list(&self.cards, &deck_list);
+        let payload = resolve_deck_list(
+            &self.cards,
+            &phase_engine::database::combo_table::ComboTable::default(),
+            &deck_list,
+        );
         let mut state = GameState::new(FormatConfig::limited(), 2, seed);
         load_and_hydrate_decks(&mut state, &payload, Some(&self.cards));
         state.all_card_names = self.cards.card_names().into();
@@ -412,6 +416,7 @@ mod tests {
             amount,
             is_combat,
             excess: 0,
+            source_incarnation: None,
         };
         assert_eq!(
             combat_damage_to_player(&damage(TargetRef::Player(PlayerId(1)), 3, true)),
@@ -432,11 +437,13 @@ mod tests {
             GameEvent::LifeChanged {
                 player_id: PlayerId(1),
                 amount: -3,
+                new_total: Default::default(),
             },
             GameEvent::CombatDamageDealtToPlayer {
                 player_id: PlayerId(1),
                 source_amounts: vec![(ObjectId(7), 3)],
                 total_damage: 3,
+                source_incarnations: Vec::new(),
             },
         ] {
             assert_eq!(combat_damage_to_player(&event), None, "{event:?}");
@@ -452,11 +459,13 @@ mod tests {
                 amount: 3,
                 is_combat: true,
                 excess: 0,
+                source_incarnation: None,
             },
             GameEvent::CombatDamageDealtToPlayer {
                 player_id: PlayerId(1),
                 source_amounts: vec![(ObjectId(7), 3)],
                 total_damage: 3,
+                source_incarnations: Vec::new(),
             },
             GameEvent::DamageDealt {
                 source_id: ObjectId(7),
@@ -464,11 +473,13 @@ mod tests {
                 amount: 3,
                 is_combat: true,
                 excess: 0,
+                source_incarnation: None,
             },
             GameEvent::CombatDamageDealtToPlayer {
                 player_id: PlayerId(1),
                 source_amounts: vec![(ObjectId(7), 3)],
                 total_damage: 3,
+                source_incarnations: Vec::new(),
             },
         ];
         let hits = events
@@ -504,6 +515,48 @@ mod tests {
 
     fn deck() -> Vec<String> {
         [vec!["Alpha".to_owned(); 20], vec!["Beta".to_owned(); 20]].concat()
+    }
+
+    #[test]
+    fn simultaneous_mulligans_offer_each_seat_only_its_own_decision() {
+        let (mut game, _) = runtime().new_limited_game([deck(), deck()], 7).unwrap();
+        while !matches!(
+            game.state().waiting_for,
+            phase_engine::types::game_state::WaitingFor::MulliganDecision { .. }
+        ) {
+            let seat = game.pending_seats()[0];
+            let action = game.legal_actions(seat).0[0].clone();
+            game.submit(seat, action).unwrap();
+        }
+        let decision = |choice| GameAction::MulliganDecision { choice };
+        let declare = vec![
+            decision(MulliganChoice::Keep),
+            decision(MulliganChoice::Mulligan),
+        ];
+        assert_eq!(game.legal_actions(0).0, declare);
+        assert_eq!(game.legal_actions(1).0, declare);
+
+        game.submit(0, decision(MulliganChoice::Mulligan)).unwrap();
+        game.submit(0, decision(MulliganChoice::Keep)).unwrap();
+
+        // Seat 0 now owes a card to the bottom of its library while seat 1 has
+        // not yet decided.
+        let bottoming = game.legal_actions(0).0;
+        assert_eq!(bottoming.len(), 7);
+        assert!(bottoming
+            .iter()
+            .all(|action| matches!(action, GameAction::SelectCards { .. })));
+        assert_eq!(game.legal_actions(1).0, declare);
+        for seat in [0, 1] {
+            for action in game.legal_actions(seat).0 {
+                let mut copy = PhaseGame {
+                    state: game.state.clone(),
+                    cards: game.cards.clone(),
+                };
+                copy.submit(seat, action.clone())
+                    .unwrap_or_else(|error| panic!("seat {seat} offered {action:?}: {error}"));
+            }
+        }
     }
 
     #[test]

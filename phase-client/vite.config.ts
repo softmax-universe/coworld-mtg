@@ -20,10 +20,29 @@ function trimManaFont(): Plugin {
   };
 }
 
+// Phase registers a PWA service worker through a virtual module its own Vite
+// config provides. The Coworld pages are served by the match server and are not
+// installable, so the registration resolves to a no-op.
+function stubPwaRegister(): Plugin {
+  const id = "virtual:pwa-register";
+  return {
+    name: "coworld-stub-pwa-register",
+    resolveId(source) {
+      return source === id ? `\0${id}` : null;
+    },
+    load(resolved) {
+      return resolved === `\0${id}`
+        ? "export function registerSW() { return async () => {}; }"
+        : null;
+    },
+  };
+}
+
 const emptyUrl = JSON.stringify("");
 const defines = Object.fromEntries(
   [
     "__AUDIO_BASE_URL__",
+    "__CARD_DATA_DE_URL__",
     "__CARD_DATA_META_URL__",
     "__CARD_DATA_URL__",
     "__CARD_NAMES_URL__",
@@ -32,17 +51,22 @@ const defines = Object.fromEntries(
     "__COVERAGE_DATA_URL__",
     "__COVERAGE_SUMMARY_URL__",
     "__DECKS_URL__",
+    "__OFFICIAL_MULTIPLAYER_SERVER_URL__",
     "__DEFAULT_MULTIPLAYER_SERVER_URL__",
     "__DRAFT_POOLS_URL__",
-    "__PREVIEW_SITE_URL__",
+    "__ENGINE_FINGERPRINT__",
+    "__ENGINE_WASM_URL__",
     "__SCRYFALL_DATA_URL__",
+    "__SCRYFALL_IMAGES_LOCALE_URL_TEMPLATE__",
     "__SCRYFALL_PRINTINGS_URL__",
     "__SCRYFALL_SETS_URL__",
     "__SCRYFALL_TOKEN_IMAGES_URL__",
     "__SET_LIST_URL__",
+    "__STATUS_URL__",
     "__SUPABASE_ANON_KEY__",
     "__SUPABASE_URL__",
     "__TELEMETRY_URL__",
+    "__TURN_CREDENTIALS_URL__",
   ].map((name) => [name, emptyUrl]),
 );
 
@@ -63,6 +87,10 @@ export default defineConfig({
     __BUILD_HASH__: JSON.stringify(process.env.PHASE_REVISION?.slice(0, 12) ?? "dev"),
     __CARD_DATA_LOCALE_URL_TEMPLATE__: emptyUrl,
     __GIT_REPO_URL__: JSON.stringify("https://github.com/phase-rs/phase"),
+    __IS_PREVIEW_BUILD__: "false",
+    // Phase compares the page origin with these, so they must parse as URLs.
+    __PREVIEW_SITE_URL__: JSON.stringify("https://preview.phase-rs.dev"),
+    __RELEASE_SITE_URL__: JSON.stringify("https://phase-rs.dev"),
     __IS_RELEASE_BUILD__: "false",
     __TAURI_INTERNALS__: "undefined",
     "import.meta.env.VITE_WS_URL": JSON.stringify("coworld://current-origin"),
@@ -83,7 +111,7 @@ export default defineConfig({
       },
     ],
   },
-  plugins: [trimManaFont(), react(), tailwindcss()],
+  plugins: [stubPwaRegister(), trimManaFont(), react(), tailwindcss()],
   build: {
     outDir: "coworld-dist",
     emptyOutDir: true,
