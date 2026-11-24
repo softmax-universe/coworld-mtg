@@ -13,4 +13,7 @@ Current replays buffer at their first recorded event and stay paused until the
 finite stream completes. The Coworld chrome owns the bottom transport dock,
 recorded-time playback, speed selection, and event/turn/game navigation. Its
 keyboard contract is Space for play/pause, Left/Right for events,
-Shift+Left/Right for turns, and Page Up/Page Down for games.
+Shift+Left/Right for turns, and Page Up/Page Down for games. H, or the dock's
+Hide button, collapses the dock to a small pill that shows the current event
+and a play button; clicking the pill or pressing H again restores it. The
+choice is remembered per browser.

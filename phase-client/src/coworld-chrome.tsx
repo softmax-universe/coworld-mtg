@@ -40,6 +40,31 @@ export function CoworldChrome() {
     () => host.__coworldReplayState ?? null,
   );
   const [showLog, setShowLog] = useState(false);
+  const [collapsed, setCollapsed] = useState(readDockCollapsed);
+  const setDockCollapsed = (next: boolean) => {
+    setCollapsed(next);
+    if (next) setShowLog(false);
+    try {
+      window.localStorage.setItem(DOCK_COLLAPSED_KEY, next ? "1" : "0");
+    } catch {
+      // Storage can be unavailable; the dock still toggles for this page view.
+    }
+  };
+
+  useEffect(() => {
+    if (!replay) return;
+    const toggleDock = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "h" || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target && (target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName))) {
+        return;
+      }
+      event.preventDefault();
+      setDockCollapsed(!collapsed);
+    };
+    window.addEventListener("keydown", toggleDock);
+    return () => window.removeEventListener("keydown", toggleDock);
+  }, [replay !== null, collapsed]);
 
   useEffect(() => {
     if (!replay) return;
@@ -64,7 +89,38 @@ export function CoworldChrome() {
           {status.connection === "disconnected" && " · disconnected"}
         </aside>
       )}
-      {replay && (
+      {replay && collapsed && (
+        <aside
+          aria-label="Replay controls"
+          className="fixed bottom-2 left-1/2 z-[120] flex max-w-[calc(100vw-1rem)] -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-zinc-950/70 py-1 pl-1 pr-1 text-[11px] text-white/80 opacity-60 shadow-lg backdrop-blur-md transition-opacity focus-within:opacity-100 hover:opacity-100"
+        >
+          <button
+            type="button"
+            className="min-w-12 rounded-full bg-white/15 px-2.5 py-1 font-semibold text-white hover:bg-white/25 disabled:opacity-40"
+            disabled={!replay.complete || replay.count === 0}
+            onClick={() => (replay.playing ? host.__coworldReplay?.pause() : host.__coworldReplay?.play())}
+          >
+            {playLabel(replay)}
+          </button>
+          <button
+            type="button"
+            aria-label="Show replay controls"
+            aria-expanded={false}
+            title="Show replay controls (H)"
+            className="flex min-w-0 items-center gap-2 rounded-full px-2 py-1 hover:bg-white/10"
+            onClick={() => setDockCollapsed(false)}
+          >
+            <span className="truncate">
+              {replay.count === 0 ? "Loading replay" : `Turn ${replay.turnNumber} · ${replay.actionLabel}`}
+            </span>
+            <span className="shrink-0 tabular-nums text-white/50">
+              {replay.count === 0 ? "" : `${Math.min(replay.index + 1, replay.count)}/${replay.count}`}
+            </span>
+            <span aria-hidden="true" className="shrink-0 text-white/50">▴</span>
+          </button>
+        </aside>
+      )}
+      {replay && !collapsed && (
         <aside
           aria-label="Replay controls"
           className="fixed bottom-3 left-1/2 z-[120] w-[min(50rem,calc(100vw-1rem))] -translate-x-1/2 rounded-xl border border-white/15 bg-zinc-950/92 px-3 py-3 text-xs text-white shadow-2xl backdrop-blur-md sm:px-4"
@@ -89,7 +145,7 @@ export function CoworldChrome() {
                   : `${replay.gameCount > 1 ? `Game ${replay.gameIndex + 1}/${replay.gameCount} · ` : ""}Turn ${replay.turnNumber} · ${replay.actionLabel}`}
               </div>
               <div className="mt-0.5 hidden text-[10px] text-white/55 sm:block">
-                Space: play/pause · ←/→: event · Shift+←/→: turn · Page Up/Down: game
+                Space: play/pause · ←/→: event · Shift+←/→: turn · Page Up/Down: game · H: hide
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -130,6 +186,16 @@ export function CoworldChrome() {
                   ))}
                 </select>
               </label>
+              <button
+                type="button"
+                aria-label="Hide replay controls"
+                aria-expanded={true}
+                title="Hide replay controls (H)"
+                className="rounded-md bg-white/10 px-2 py-1.5 hover:bg-white/20"
+                onClick={() => setDockCollapsed(true)}
+              >
+                Hide
+              </button>
             </div>
           </div>
 
@@ -172,13 +238,7 @@ export function CoworldChrome() {
                   replay.playing ? host.__coworldReplay?.pause() : host.__coworldReplay?.play()
                 }
               >
-                {!replay.complete
-                  ? "Loading…"
-                  : replay.playing
-                    ? "Pause"
-                    : replay.index >= replay.count - 1
-                      ? "Replay"
-                      : "Play"}
+                {playLabel(replay)}
               </button>
               <button
                 type="button"
@@ -224,6 +284,22 @@ export function CoworldChrome() {
       )}
     </>
   );
+}
+
+const DOCK_COLLAPSED_KEY = "coworld-replay-dock-collapsed";
+
+function readDockCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(DOCK_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function playLabel(replay: CoworldReplayState): string {
+  if (!replay.complete) return "Loading…";
+  if (replay.playing) return "Pause";
+  return replay.index >= replay.count - 1 ? "Replay" : "Play";
 }
 
 function ReplayMoveLog({ replay, onSeek }: { replay: CoworldReplayState; onSeek: (index: number) => void }) {

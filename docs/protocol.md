@@ -188,5 +188,6 @@ by game/match end frames. The Phase replay adapter buffers the finite stream
 without advancing the board, then provides local playback that starts at the
 first event and stops at the last. The replay dock exposes separate event,
 turn, and game timelines, recorded-time playback at 0.5x/1x/2x/4x, and keyboard
-transport (Space, Left/Right, Shift+Left/Right, and Page Up/Page Down).
+transport (Space, Left/Right, Shift+Left/Right, and Page Up/Page Down). H
+collapses the dock to a small pill and restores it.
 Version-2 replay loading remains supported as described above.

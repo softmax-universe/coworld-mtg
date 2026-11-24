@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CoworldChrome } from "./coworld-chrome";
 import type { CoworldReplayController, CoworldReplayState } from "./coworld-ws-adapter";
@@ -10,6 +10,20 @@ type ReplayWindow = Window & {
 };
 
 describe("Coworld replay chrome", () => {
+  beforeEach(() => {
+    // A fresh in-memory store per test, independent of the runner's own storage support.
+    const store = new Map<string, string>();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => void store.set(key, value),
+        removeItem: (key: string) => void store.delete(key),
+        clear: () => store.clear(),
+      },
+    });
+  });
+
   afterEach(() => {
     cleanup();
     delete (window as ReplayWindow).__coworldReplay;
@@ -70,6 +84,35 @@ describe("Coworld replay chrome", () => {
     expect(screen.getByRole("complementary", { name: "Replay move log" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /Nissa · Cast Spell/ }));
     expect(controller.seek).toHaveBeenCalledWith(2);
+  });
+
+  it("collapses to a small pill and remembers the choice", () => {
+    const host = window as ReplayWindow;
+    const play = vi.fn();
+    host.__coworldReplay = {
+      play, pause: vi.fn(), seek: vi.fn(), step: vi.fn(), seekTurn: vi.fn(),
+      stepTurn: vi.fn(), seekGame: vi.fn(), stepGame: vi.fn(), setRate: vi.fn(),
+      setPerspective: vi.fn(), setShowPriorityPasses: vi.fn(),
+    };
+    host.__coworldReplayState = replayState();
+
+    const first = render(<CoworldChrome />);
+    fireEvent.click(screen.getByRole("button", { name: "Hide replay controls" }));
+
+    expect(screen.queryByLabelText("Event position")).not.toBeInTheDocument();
+    expect(screen.getByText("Turn 2 · Nissa · Cast Spell")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    expect(play).toHaveBeenCalledOnce();
+
+    first.unmount();
+    render(<CoworldChrome />);
+    expect(screen.queryByLabelText("Event position")).not.toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "h" });
+    expect(screen.getByLabelText("Event position")).toBeVisible();
+    fireEvent.keyDown(window, { key: "h" });
+    fireEvent.click(screen.getByRole("button", { name: "Show replay controls" }));
+    expect(screen.getByLabelText("Event position")).toBeVisible();
   });
 
   it("hides the game control for a single-game replay", () => {
