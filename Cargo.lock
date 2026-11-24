@@ -381,28 +381,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "engine"
-version = "0.24.0"
-source = "git+https://github.com/nishu-builder/phase.git?rev=54227f4527a0b45b01eb3f819d262ee49b665810#54227f4527a0b45b01eb3f819d262ee49b665810"
-dependencies = [
- "im",
- "indexmap",
- "nom",
- "petgraph",
- "rand 0.9.4",
- "rand_chacha 0.9.0",
- "rustc-hash",
- "serde",
- "serde_json",
- "smallvec",
- "strum",
- "thiserror 2.0.18",
- "toml",
- "tracing",
- "web-time",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -951,7 +929,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1069,16 +1046,75 @@ dependencies = [
 ]
 
 [[package]]
+name = "phase-ast"
+version = "0.131.0"
+source = "git+https://github.com/phase-rs/phase.git?rev=d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4#d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4"
+dependencies = [
+ "im",
+ "nom",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "phase-bridge"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "engine",
  "loop-contract",
+ "phase-engine",
  "rand_chacha 0.9.0",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "phase-engine"
+version = "0.131.0"
+source = "git+https://github.com/phase-rs/phase.git?rev=d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4#d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "im",
+ "indexmap",
+ "nom",
+ "petgraph",
+ "phase-ast",
+ "phase-parser",
+ "rand 0.9.4",
+ "rand_chacha 0.9.0",
+ "rustc-hash",
+ "same-file",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "sha2",
+ "smallvec",
+ "strum",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "phase-parser"
+version = "0.131.0"
+source = "git+https://github.com/phase-rs/phase.git?rev=d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4#d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4"
+dependencies = [
+ "nom",
+ "phase-ast",
+ "serde",
+ "serde_json",
+ "sha2",
+ "strum",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -1434,6 +1470,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "same-file"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+dependencies = [
+ "winapi-util",
+]
+
+[[package]]
 name = "schemars"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1503,6 +1548,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -2218,6 +2273,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "winapi-util"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+dependencies = [
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

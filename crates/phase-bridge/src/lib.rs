@@ -4,6 +4,10 @@
 //! reproduce Magic rules; it translates deck/configuration input and exposes
 //! Phase's exact legal actions and viewer-filtered state to the host.
 
+// Phase's state types nest deeply enough to exceed the default limit when
+// the compiler proves a future holding them is `Send`.
+#![recursion_limit = "512"]
+
 mod fitting;
 pub use fitting::combat_damage_to_player;
 mod oracle;
@@ -13,6 +17,7 @@ mod scenario;
 mod view;
 
 use phase_engine::ai_support::{auto_pass_recommended, legal_actions_for_viewer, LegalActionsFull};
+use phase_engine::database::combo_table::ComboTable;
 use phase_engine::database::CardDatabase;
 use phase_engine::game::deck_loading::{
     resolve_deck_list, DeckList as PhaseDeckList, PlayerDeckList,
@@ -25,7 +30,7 @@ use phase_engine::game::{
 };
 use phase_engine::types::card_type::CoreType;
 use phase_engine::types::format::FormatConfig;
-use phase_engine::types::game_state::{AutoPassMode, WaitingFor};
+use phase_engine::types::game_state::{AutoPassMode, GameRng, WaitingFor};
 pub use phase_engine::types::identifiers::ObjectId;
 use phase_engine::types::mana::ManaCost;
 use phase_engine::types::phase::PhaseStop;
@@ -45,7 +50,7 @@ pub use view::{
 };
 
 /// The exact Phase fork revision used by this adapter.
-pub const PHASE_REVISION: &str = "54227f4527a0b45b01eb3f819d262ee49b665810";
+pub const PHASE_REVISION: &str = "d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4";
 
 pub const SPECTATOR_ID: u8 = u8::MAX;
 
@@ -114,14 +119,15 @@ impl PhaseRuntime {
                 .spawn_scoped(scope, || {
                     let checkpoint: PhaseCheckpoint = serde_json::from_str(checkpoint_json)
                         .map_err(|error| BridgeError::Checkpoint(error.to_string()))?;
-                    if checkpoint.schema != "phase-bridge-checkpoint-v1" {
+                    if checkpoint.schema != "phase-bridge-checkpoint-v2" {
                         return Err(BridgeError::Checkpoint(format!(
                             "unsupported schema {}",
                             checkpoint.schema
                         )));
                     }
                     let mut state = checkpoint.state;
-                    state.rng = checkpoint.rng;
+                    state.rng = GameRng::seed_from_u64(state.rng_seed);
+                    state.rng.set_word_pos(checkpoint.rng_word_pos);
                     rehydrate_game_from_card_db(&mut state, &self.cards);
                     finalize_public_state(&mut state);
                     Ok(state)
@@ -167,7 +173,7 @@ impl PhaseRuntime {
             },
             ..PhaseDeckList::default()
         };
-        let payload = resolve_deck_list(&self.cards, &deck_list);
+        let payload = resolve_deck_list(&self.cards, &ComboTable::default(), &deck_list);
         let mut state = GameState::new(FormatConfig::limited(), 2, seed);
         load_and_hydrate_decks(&mut state, &payload, Some(&self.cards));
         state.all_card_names = self.cards.card_names().into();
@@ -201,9 +207,9 @@ impl PhaseGame {
                 .stack_size(32 * 1024 * 1024)
                 .spawn_scoped(scope, || {
                     serde_json::to_string(&PhaseCheckpointRef {
-                        schema: "phase-bridge-checkpoint-v1",
+                        schema: "phase-bridge-checkpoint-v2",
                         state: &self.state,
-                        rng: &self.state.rng,
+                        rng_word_pos: self.state.rng.get_word_pos(),
                     })
                 })
                 .map_err(|error| BridgeError::Checkpoint(error.to_string()))?
@@ -235,11 +241,7 @@ impl PhaseGame {
             .iter()
             .any(|action| matches!(action, GameAction::PassPriority));
         let recommended_auto_pass = can_pass && auto_pass_recommended(&self.state, &legal_actions);
-        let auto_pass_mode = self
-            .state
-            .auto_pass
-            .get(&player)
-            .map(|session| session.mode.clone());
+        let auto_pass_mode = self.state.auto_pass.get(&player).copied();
         let phase_stops = self
             .state
             .phase_stops
@@ -304,11 +306,7 @@ impl PhaseGame {
             ViewerPreferences {
                 player: Some(seat),
                 auto_pass_recommended: false,
-                auto_pass_mode: self
-                    .state
-                    .auto_pass
-                    .get(&player)
-                    .map(|session| session.mode.clone()),
+                auto_pass_mode: self.state.auto_pass.get(&player).copied(),
                 phase_stops: self
                     .state
                     .phase_stops
@@ -326,7 +324,23 @@ impl PhaseGame {
 
     /// Return only actions Phase authorizes this viewer to submit now.
     pub fn legal_actions(&self, seat: u8) -> LegalActionsFull {
-        legal_actions_for_viewer(&self.state, PlayerId(seat))
+        let mut actions = legal_actions_for_viewer(&self.state, PlayerId(seat));
+        // While players mulligan at the same time, Phase returns one combined
+        // list to every seat: the other seat's choices too, and each shared
+        // choice once per deciding player. Phase itself decides which of them
+        // this seat may take, by applying each to a copy of the state.
+        if matches!(self.state.waiting_for, WaitingFor::MulliganDecision { .. }) {
+            let mut accepted: Vec<GameAction> = Vec::new();
+            for action in std::mem::take(&mut actions.0) {
+                if !accepted.contains(&action)
+                    && apply(&mut self.state.clone(), PlayerId(seat), action.clone()).is_ok()
+                {
+                    accepted.push(action);
+                }
+            }
+            actions.0 = accepted;
+        }
+        actions
     }
 
     pub fn pending_seats(&self) -> Vec<u8> {
@@ -381,14 +395,16 @@ impl PhaseGame {
 struct PhaseCheckpointRef<'a> {
     schema: &'static str,
     state: &'a GameState,
-    rng: &'a rand_chacha_phase::ChaCha20Rng,
+    /// Live position in the seeded stream. The engine's own serialized
+    /// position is a high-water mark, which can be ahead of the live stream.
+    rng_word_pos: u128,
 }
 
 #[derive(Deserialize)]
 struct PhaseCheckpoint {
     schema: String,
     state: GameState,
-    rng: rand_chacha_phase::ChaCha20Rng,
+    rng_word_pos: u128,
 }
 
 fn action_is_offered(
@@ -451,10 +467,13 @@ impl ViewerSnapshot {
                     }
                 }
             }
+            // Phase serializes its client view as `{state, derived}` and applies
+            // its own redactions to `state` on the way out.
+            let mut envelope =
+                serde_json::to_value(&client_state).expect("Phase client state must serialize");
             PhaseClientSnapshot {
-                state: serde_json::to_value(state).expect("Phase client state must serialize"),
-                derived: serde_json::to_value(client_state.derived)
-                    .expect("Phase derived views must serialize"),
+                state: envelope["state"].take(),
+                derived: envelope["derived"].take(),
                 legal_actions: client_legal_actions,
                 auto_pass_recommended: preferences.auto_pass_recommended,
                 spell_costs: spell_costs

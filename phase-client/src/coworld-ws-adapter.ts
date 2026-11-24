@@ -30,6 +30,52 @@ export type {
 export const PROTOCOL_VERSION = 1;
 export const MIN_SUPPORTED_SERVER_PROTOCOL = 1;
 export const LOBBY_MIN_SUPPORTED_SERVER_PROTOCOL = 1;
+export const LOBBY_PROTOCOL_VERSION = 1;
+
+// Phase's lobby and server-discovery screens import these from the adapter
+// they replace. Coworld has one server and no lobby, so nothing is ever
+// rejected and no format needs a newer lobby.
+export function lobbyProtocolRequiredForFormatConfig(_config: unknown): number | null {
+  return null;
+}
+
+export const MIN_LOBBY_PROTOCOL_FOR_DEFAULT_SCORING = 1;
+export const MIN_LOBBY_PROTOCOL_FOR_MATCH_TYPE = 1;
+export const MIN_LOBBY_PROTOCOL_FOR_RECOVERABLE_ROTATION = 1;
+export const MIN_LOBBY_PROTOCOL_FOR_TOURNAMENT_ACK = 1;
+
+export function lobbyProtocolRequiredForFormat(_format: unknown): number | null {
+  return null;
+}
+
+export class NativeEngineVersionMismatchError extends Error {
+  constructor(
+    public readonly expected: string,
+    public readonly actual: string,
+  ) {
+    super("Native engine version does not match this release");
+    this.name = "NativeEngineVersionMismatchError";
+  }
+}
+
+// Phase recovers a finished online game's result over a second socket. A
+// Coworld match reports its result in the match stream itself, so there is
+// never a separate delivery to fetch or acknowledge.
+export async function bootstrapFullTerminalDelivery(..._args: unknown[]): Promise<null> {
+  return null;
+}
+
+export async function readFullTerminalResult(..._args: unknown[]): Promise<null> {
+  return null;
+}
+
+export async function acknowledgeFullTerminalDelivery(..._args: unknown[]): Promise<boolean> {
+  return false;
+}
+
+export function serverProtocolRejection(_info: unknown, _surface?: unknown): string | null {
+  return null;
+}
 
 export interface DeckData {
   main_deck: string[];

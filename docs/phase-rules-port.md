@@ -2,28 +2,43 @@
 
 ## Decision
 
-Coworld MTG uses the open-source Phase engine as its rules authority. Production
-builds pin the maintained [nishu-builder fork](https://github.com/nishu-builder/phase),
-while [phase-rs/phase](https://github.com/phase-rs/phase) remains the upstream
-project. The previous `tabletop-core` model is a useful
+Coworld MTG uses the open-source Phase engine as its rules authority. Builds
+pin [phase-rs/phase](https://github.com/phase-rs/phase) directly at an immutable
+commit of its `main` branch. The previous `tabletop-core` model is a useful
 shared event-table prototype, but it cannot become real Magic by incrementally
 adding checks: priority, casting, costs, continuous effects, layers, state-based
 actions, triggers, replacement effects, and combat all depend on one another.
 
-The Phase engine dependency is pinned to fork commit
-`b5f468588240df079cad95b94467038ffa6d0282`, under Phase's MIT/Apache-2.0
+The Phase engine dependency is pinned to upstream commit
+`d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4`, under Phase's MIT/Apache-2.0
 license.
 `crates/phase-bridge` is the only Coworld MTG layer allowed to invoke it. Host,
 replay, browser, and policy code consume viewer-filtered state and exact legal
 `GameAction` values; they must not reproduce legality.
 
 `phase-source.json` is the canonical source decision. Builds always resolve its
-repository to an immutable commit; they never follow a mutable branch. The
-maintained fork remains selected while it contains Coworld-required behavior
-that is not proven by upstream regression tests. Switching to `phase-rs/phase`
-requires every retained fork regression to pass at an upstream `main` commit,
-after which the repository and SHA move together and `scripts/check-phase-pin.py`
-verifies every build surface.
+repository to an immutable commit; they never follow a mutable branch, and
+`scripts/check-phase-pin.py` verifies every build surface names the same one.
+
+Until 2026-11-24 builds pinned a [maintained fork](https://github.com/nishu-builder/phase)
+that carried fixes ahead of upstream. Most of those have since merged upstream.
+The move to upstream `main` gave up the fork-only changes listed in
+[Fork behaviour not in upstream](#fork-behaviour-not-in-upstream); anything
+Coworld still needs from that list has to land upstream, not in a fork.
+
+## Fork behaviour not in upstream
+
+Checked on 2026-11-24 against upstream `d9c32fb2e`. "Reproduced" means the
+fork's regression test was ported to upstream and failed there.
+
+| Fork change | State on upstream | Effect on Coworld |
+| --- | --- | --- |
+| A spell is not offered when its additional cost and a needed mana ability use the same cards (Soaring Stoneglider with Rubble Rouser) | Reproduced: the cast is offered and cannot be completed; only cancelling exits | A player can be led into a cast it must cancel. Fix being upstreamed. |
+| A required fixed-mana additional cost counts toward the total | Reproduced, but only with a hand-built fixture; no card in the current card data has this cost shape | None known |
+| Simultaneous decisions (mulligans) offered only to the deciding seat | Reproduced through the bridge: every seat is offered the combined list, including the other seat's bottom-card choices, which Phase then rejects | Handled in `phase-bridge`: while mulligans are pending it keeps only the actions Phase accepts from that seat. A fix belongs upstream. |
+| Trigger suppression captured when a suppressor leaves with the permanents it suppresses (Hushbringer) | Upstream handles destroy and zone-change effects with a different mechanism; deaths from state-based actions and sacrifice costs are not covered, and an upstream test records that gap | Wrong triggers in those cases |
+| Arena-style priority controls (full control, pass turn, one-shot stops) | Upstream has its own, smaller design (`SetPriorityPassingMode`) | None: no Coworld code used the fork's controls |
+| Phyrexian-mana payment preview takes pinned choices into account | Partly different upstream; not tested | Unknown |
 
 ## Why Phase
 

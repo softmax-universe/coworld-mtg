@@ -82,8 +82,8 @@ search budget does not establish a rules bug.
 
 ### Fixes upstreamed to Phase
 
-Coworld builds pin a [maintained fork](https://github.com/nishu-builder/phase).
-These fixes have been merged back into `phase-rs/phase`:
+Coworld builds pin `phase-rs/phase` directly. These fixes, found here, have been
+merged into it:
 
 - [Route reflexive triggers through the stack](https://github.com/phase-rs/phase/pull/7332)
 - [Persist colors spent to cast through trigger collection](https://github.com/phase-rs/phase/pull/7039)
