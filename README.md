@@ -119,8 +119,10 @@ Some limits worth knowing before reading the results:
   negative combat-damage values, for instance.
 - Run locally, the loop has [accepted five model-proposed changes in a row](loop/runs/2026-11-24/README.md).
   At three turns per player, the eleven games without mulligans went from
-  seven matches to all eleven. At four turns, three match. Those runs used
-  public card data, not the private corpus.
+  seven matches to all eleven. At four turns, three match. Moving the pin to
+  upstream Phase dropped the three-turn count to eight; two more accepted
+  changes brought it back to eleven. Those runs used public card data, not the
+  private corpus.
 - In the [first full CAOS run](replays/caos-factory-20260920/README.md), the
   run pictured above, the model contributor looked at the evidence and chose to
   propose no change.

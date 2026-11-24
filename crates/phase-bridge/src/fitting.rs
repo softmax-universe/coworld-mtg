@@ -217,6 +217,24 @@ impl PhaseGame {
         game.checkpoint_json()
     }
 
+    /// `fitting_identity_json` without the records a cancelled cast leaves
+    /// behind, for asking whether a `CancelCast` returned to the state its
+    /// cast began from.
+    ///
+    /// Announcing a spell takes the next `next_spell_announcement` number and
+    /// appends its proposals to `resolved_rules_journal`; cancelling restores
+    /// the card, the stack and the mana but not those two records. Backing out
+    /// of a cast is not a game event, so two states that differ only there are
+    /// the same position. This form is for that one comparison: unlike
+    /// `fitting_identity_json`, it does not tell apart states whose completed
+    /// casts differ only in the journal.
+    pub fn cancelled_cast_identity_json(&self) -> Result<String, BridgeError> {
+        let mut identity: Value = serde_json::from_str(&self.fitting_identity_json()?)
+            .map_err(|error| BridgeError::Checkpoint(error.to_string()))?;
+        drop_cancelled_cast_records(&mut identity);
+        Ok(identity.to_string())
+    }
+
     fn pending_search(&self, seat: u8) -> Option<PendingSearch> {
         let waiting = serde_json::to_value(&self.state.waiting_for).ok()?;
         let data = waiting
@@ -361,6 +379,17 @@ impl PendingSearch {
             } else {
                 selected.len() == self.count.min(self.cards.len())
             }
+    }
+}
+
+/// The checkpoint fields a cancelled cast advances without undoing.
+const CANCELLED_CAST_RECORDS: [&str; 2] = ["next_spell_announcement", "resolved_rules_journal"];
+
+fn drop_cancelled_cast_records(checkpoint: &mut Value) {
+    if let Some(state) = checkpoint.get_mut("state").and_then(Value::as_object_mut) {
+        for record in CANCELLED_CAST_RECORDS {
+            state.remove(record);
+        }
     }
 }
 
@@ -831,6 +860,37 @@ mod tests {
         assert_ne!(
             changed.fitting_identity_json().unwrap(),
             game.fitting_identity_json().unwrap()
+        );
+    }
+
+    #[test]
+    fn cancelled_cast_identity_ignores_only_what_a_cancelled_cast_leaves_behind() {
+        let runtime = runtime();
+        let (game, _) = runtime
+            .new_limited_game_for_fitting([deck(), deck()], [deck(), deck()], 0, 41)
+            .unwrap();
+        let checkpoint: Value = serde_json::from_str(&game.checkpoint_json().unwrap()).unwrap();
+        // Both records are part of every checkpoint, so dropping them is not a
+        // silent no-op after an engine rename.
+        for record in CANCELLED_CAST_RECORDS {
+            assert!(checkpoint["state"].get(record).is_some(), "{record}");
+        }
+        let neutral = |mut value: Value| {
+            drop_cancelled_cast_records(&mut value);
+            value
+        };
+        let mut cancelled = checkpoint.clone();
+        cancelled["state"]["next_spell_announcement"] = Value::from(3);
+        cancelled["state"]["resolved_rules_journal"] =
+            serde_json::json!({"entries": [{"ordinal": 0}], "next_command_ordinal": 4});
+        assert_ne!(cancelled, checkpoint);
+        assert_eq!(neutral(cancelled.clone()), neutral(checkpoint.clone()));
+        let mut changed = cancelled;
+        changed["state"]["players"][1]["life"] = Value::from(19);
+        assert_ne!(neutral(changed), neutral(checkpoint.clone()));
+        assert_eq!(
+            serde_json::from_str::<Value>(&game.cancelled_cast_identity_json().unwrap()).unwrap(),
+            neutral(checkpoint)
         );
     }
 
