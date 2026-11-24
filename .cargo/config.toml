@@ -1,0 +1,5 @@
+# Phase's engine recurses deeply enough to overflow the 2 MiB default stack of
+# a spawned thread, which is what `cargo test` runs each test on. Binaries size
+# their own engine threads; this covers tests that call the engine directly.
+[env]
+RUST_MIN_STACK = "33554432"
