@@ -37,6 +37,16 @@ trap 'rm -rf "$WORK"' EXIT
 
 case "$URI" in
   s3://*) aws s3 cp "$URI" "$ARCHIVE" --profile "${AWS_PROFILE:-softmax}" --only-show-errors ;;
+  gh://*)
+    # gh://<owner>/<repo>/<release tag>/<asset name>: a release asset of a
+    # private GitHub repository, read with the caller's `gh` sign-in.
+    IFS=/ read -r GH_OWNER GH_REPO GH_TAG GH_ASSET <<<"${URI#gh://}"
+    if [[ -z "$GH_OWNER" || -z "$GH_REPO" || -z "$GH_TAG" || -z "$GH_ASSET" || "$GH_ASSET" == */* ]]; then
+      echo "corpus URI must be gh://<owner>/<repo>/<tag>/<asset>: $URI" >&2
+      exit 1
+    fi
+    gh release download "$GH_TAG" --repo "$GH_OWNER/$GH_REPO" --pattern "$GH_ASSET" --output "$ARCHIVE"
+    ;;
   file://*) cp "${URI#file://}" "$ARCHIVE" ;;
   https://*|http://*) curl --fail --location --silent --show-error "$URI" --output "$ARCHIVE" ;;
   *) cp "$URI" "$ARCHIVE" ;;

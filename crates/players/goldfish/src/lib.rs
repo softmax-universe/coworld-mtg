@@ -214,6 +214,9 @@ fn action_rank(value: &Value) -> (u8, std::cmp::Reverse<usize>) {
         "DeclareAttackers" => 5,
         "DeclareBlockers" => 6,
         "PassPriority" => 8,
+        // Backing out of a cast is the last resort: Phase lists it beside the
+        // choices that complete the cast, and taking it first never finishes one.
+        "CancelCast" => 9,
         _ => 7,
     };
     (rank, std::cmp::Reverse(count))
@@ -251,6 +254,20 @@ mod tests {
         ];
         let chosen = serde_json::to_value(choose_action(&actions).unwrap()).unwrap();
         assert_eq!(chosen["type"], "PlayLand");
+    }
+
+    #[test]
+    fn completes_a_cast_before_cancelling_it() {
+        let actions = vec![
+            serde_json::from_value(serde_json::json!({ "type": "CancelCast" })).unwrap(),
+            serde_json::from_value(serde_json::json!({
+                "type": "ChooseX",
+                "data": { "value": 0 }
+            }))
+            .unwrap(),
+        ];
+        let chosen = serde_json::to_value(choose_action(&actions).unwrap()).unwrap();
+        assert_eq!(chosen["type"], "ChooseX");
     }
 
     #[test]

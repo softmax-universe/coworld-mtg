@@ -7,7 +7,7 @@ struct Args {
     url: Option<String>,
 }
 
-const WORKER_STACK_SIZE: usize = 4 * 1024 * 1024;
+const WORKER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 fn main() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()

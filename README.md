@@ -232,8 +232,10 @@ reviewing the resolved paths and sizes it prints.
 ## Private runtime corpus
 
 The generated Phase card database and 17Lands-derived deck lists are not
-distributed in this public repository. Authorized Softmax builds fetch the
-content-addressed private corpus pinned by `corpus.lock.json`:
+distributed in this public repository. Authorized builds fetch the
+content-addressed private corpus pinned by `corpus.lock.json`. The archive is a
+release asset of a private GitHub repository, so the fetch needs a `gh` sign-in
+that can read it:
 
 ```sh
 scripts/fetch-corpus.sh
