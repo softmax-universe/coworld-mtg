@@ -71,6 +71,75 @@ class FetchCorpusTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((destination / "phase-card-data.json").read_bytes(), b"{}\n")
 
+    def test_downloads_a_github_release_asset_with_gh(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            archive, checksum = make_archive(parent)
+            tools = parent / "tools"
+            tools.mkdir()
+            calls = parent / "gh-calls.txt"
+            gh = tools / "gh"
+            gh.write_text(
+                "#!/usr/bin/env bash\n"
+                f'printf "%s\\n" "$*" >> "{calls}"\n'
+                'while [[ $# -gt 0 ]]; do\n'
+                '  if [[ "$1" == --output ]]; then out="$2"; fi\n'
+                "  shift\n"
+                "done\n"
+                f'cp "{archive}" "$out"\n'
+            )
+            gh.chmod(0o755)
+            lock_path = parent / "corpus.lock.json"
+            lock_path.write_text(
+                json.dumps(
+                    {
+                        "archive_uri": "gh://owner/repo/v1-tag/corpus.tar.zst",
+                        "sha256": checksum,
+                    }
+                )
+            )
+            destination = parent / "corpus"
+            result = subprocess.run(
+                [str(SCRIPT)],
+                env=os.environ
+                | {
+                    "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+                    "COWORLD_MTG_CORPUS_LOCK": str(lock_path),
+                    "COWORLD_MTG_CORPUS_PARENT": str(parent),
+                    "COWORLD_MTG_CORPUS_DIR": str(destination),
+                },
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((destination / "phase-card-data.json").read_bytes(), b"{}\n")
+            self.assertIn(
+                "release download v1-tag --repo owner/repo --pattern corpus.tar.zst",
+                calls.read_text(),
+            )
+
+    def test_rejects_a_malformed_github_release_uri(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            archive, checksum = make_archive(parent)
+            lock_path = parent / "corpus.lock.json"
+            lock_path.write_text(
+                json.dumps({"archive_uri": "gh://owner/repo/only-a-tag", "sha256": checksum})
+            )
+            result = subprocess.run(
+                [str(SCRIPT)],
+                env=os.environ
+                | {
+                    "COWORLD_MTG_CORPUS_LOCK": str(lock_path),
+                    "COWORLD_MTG_CORPUS_PARENT": str(parent),
+                    "COWORLD_MTG_CORPUS_DIR": str(parent / "corpus"),
+                },
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("corpus URI must be gh://", result.stderr)
+
     def test_checksum_failure_preserves_existing_destination(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)

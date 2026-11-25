@@ -1,7 +1,7 @@
 {
-  "archive_uri": "s3://observatory-private/cogames/coworlds/coworld-mtg/corpora/v1/dfb96d582fc0f03cbc00e8837e4d1dcac42bb3cef6c715677ea446bed1be9099/coworld-mtg-corpus-v1.tar.zst",
-  "bytes": 26234,
-  "phase_revision": "54227f4527a0b45b01eb3f819d262ee49b665810",
+  "archive_uri": "gh://nishu-builder/coworld-mtg-corpus/v1-cc68ea649559/coworld-mtg-corpus-v1.tar.zst",
+  "bytes": 20288,
+  "phase_revision": "d9c32fb2e7dd1d378b4ae55bdce6aa3490f60de4",
   "schema": "coworld-mtg-corpus-lock-v1",
-  "sha256": "dfb96d582fc0f03cbc00e8837e4d1dcac42bb3cef6c715677ea446bed1be9099"
+  "sha256": "cc68ea649559424bc2b08658b6bbd816b0071b72b2aee573fd3ba7f9f6a75a31"
 }

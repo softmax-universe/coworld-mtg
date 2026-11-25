@@ -25,8 +25,11 @@ a different task must acquire its own workspace before creating files.
 
 The September 7 minimal closure contains 50 card-face entries and 46 distinct
 Oracle IDs. It preserves the exact bytes of both original 40-card decks and adds
-the four required Prepare spell faces. The committed lock names the published 50-entry archive, verified by a complete
-S3 readback. The examples below can also validate the retained local copy. During
+the four required Prepare spell faces. That archive was published to S3 and verified by a complete readback. The
+committed lock has since moved to a 50-entry archive rebuilt against upstream
+Phase and published as a private GitHub release asset; the archive hashes below
+describe the September 7 artifact, not that one. The examples below can also
+validate a retained local copy. During
 future artifact reviews, use both lock and URI overrides; changing only the URI
 still verifies the committed hash.
 

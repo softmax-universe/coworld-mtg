@@ -12,7 +12,7 @@ use tokio::time::{sleep, timeout, Duration};
 use tokio_tungstenite::tungstenite::Message;
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-const WORKER_STACK_SIZE: usize = 4 * 1024 * 1024;
+const WORKER_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 #[test]
 fn goldfish_match_writes_results_and_replay() {

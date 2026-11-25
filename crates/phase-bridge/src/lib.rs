@@ -691,14 +691,33 @@ mod tests {
         assert!(!is_preference_action(&GameAction::PassPriority));
     }
 
+    /// Phase opens a game by asking one player who goes first (CR 103.1) and
+    /// deals opening hands only after that answer.
+    #[cfg(feature = "private-corpus-tests")]
+    fn choose_starting_player(game: &mut PhaseGame) {
+        use phase_engine::types::game_state::WaitingFor;
+
+        let WaitingFor::ChooseStartingPlayer { player, .. } = game.state().waiting_for else {
+            panic!("Phase must open with the starting-player choice");
+        };
+        let choice = game
+            .legal_actions(player.0)
+            .0
+            .into_iter()
+            .next()
+            .expect("Phase must offer the chooser a starting player");
+        game.submit(player.0, choice).unwrap();
+    }
+
     #[test]
     #[cfg(feature = "private-corpus-tests")]
     fn phase_stops_are_actor_scoped_and_legal_outside_the_current_prompt() {
-        use phase_engine::types::phase::{Phase, PhaseStopRetention, PhaseStopScope};
+        use phase_engine::types::phase::{Phase, PhaseStopScope};
 
         let runtime = private_runtime();
         let decks = private_decks();
         let (mut game, _) = runtime.new_limited_game(decks, 11).unwrap();
+        choose_starting_player(&mut game);
         let keep = game
             .legal_actions(1)
             .0
@@ -717,7 +736,6 @@ mod tests {
         let stop = PhaseStop {
             phase: Phase::Upkeep,
             scope: PhaseStopScope::OwnTurn,
-            retention: PhaseStopRetention::Persistent,
         };
 
         game.submit(1, GameAction::SetPhaseStops { stops: vec![stop] })
@@ -781,6 +799,7 @@ mod tests {
         let decks = private_decks();
         let (mut game, initial) = runtime.new_limited_game(decks, 4242).unwrap();
         assert!(!initial.events.is_empty());
+        choose_starting_player(&mut game);
         assert_eq!(game.state().players[0].hand.len(), 7);
         assert_eq!(game.state().players[1].hand.len(), 7);
 
