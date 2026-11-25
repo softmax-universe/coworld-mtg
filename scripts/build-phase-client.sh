@@ -35,6 +35,14 @@ git -C "$CHECKOUT" restore --source=HEAD -- \
 git -C "$CHECKOUT" apply --check "$PHASE_PATCH"
 git -C "$CHECKOUT" apply "$PHASE_PATCH"
 
+# Phase's client runs `pnpm run protocol:generate` after install, so a bare
+# `pnpm` must resolve. Corepack alone does not put one on PATH.
+PNPM_SHIM="$CHECKOUT/.coworld-bin"
+mkdir -p "$PNPM_SHIM"
+printf '#!/bin/sh\nexec corepack pnpm@10.28.2 "$@"\n' > "$PNPM_SHIM/pnpm"
+chmod +x "$PNPM_SHIM/pnpm"
+export PATH="$PNPM_SHIM:$PATH"
+
 corepack pnpm@10.28.2 --dir "$CHECKOUT/client" install --frozen-lockfile
 if [[ ${PHASE_CLIENT_SKIP_TESTS:-0} != 1 ]]; then
   corepack pnpm@10.28.2 --dir "$CHECKOUT/client" exec vitest run --coverage.enabled=false \
