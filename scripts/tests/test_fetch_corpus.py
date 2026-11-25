@@ -140,6 +140,31 @@ class FetchCorpusTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("corpus URI must be gh://", result.stderr)
 
+    def test_explains_how_to_name_the_archive_when_no_location_is_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            lock_path = parent / "corpus.lock.json"
+            lock_path.write_text(json.dumps({"sha256": "0" * 64}))
+            environment = {
+                name: value
+                for name, value in os.environ.items()
+                if name != "COWORLD_MTG_CORPUS_URI"
+            }
+            result = subprocess.run(
+                [str(SCRIPT)],
+                env=environment
+                | {
+                    "COWORLD_MTG_CORPUS_LOCK": str(lock_path),
+                    "COWORLD_MTG_CORPUS_PARENT": str(parent),
+                    "COWORLD_MTG_CORPUS_DIR": str(parent / "corpus"),
+                },
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Set COWORLD_MTG_CORPUS_URI", result.stderr)
+            self.assertFalse((parent / "corpus").exists())
+
     def test_checksum_failure_preserves_existing_destination(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)

@@ -140,6 +140,7 @@ root:
 ```sh
 npm install
 npm run build
+export COWORLD_MTG_CORPUS_URI=...   # see "Private runtime corpus" below
 scripts/fetch-corpus.sh
 scripts/cargo.sh build -p coworld-mtg-server -p goldfish
 mkdir -p tmp/local-play
@@ -232,14 +233,28 @@ reviewing the resolved paths and sizes it prints.
 ## Private runtime corpus
 
 The generated Phase card database and 17Lands-derived deck lists are not
-distributed in this public repository. Authorized builds fetch the
-content-addressed private corpus pinned by `corpus.lock.json`. The archive is a
-release asset of a private GitHub repository, so the fetch needs a `gh` sign-in
-that can read it:
+distributed in this public repository. `corpus.lock.json` pins what the corpus
+must be (its SHA-256 and the Phase revision it was built for) but not where it
+lives. Tell the fetch script where you can read the archive from, then run it:
 
 ```sh
+export COWORLD_MTG_CORPUS_URI=gh://<owner>/<repo>/<release tag>/coworld-mtg-corpus-v1.tar.zst
 scripts/fetch-corpus.sh
 ```
+
+`COWORLD_MTG_CORPUS_URI` accepts:
+
+| Form | Read with |
+| --- | --- |
+| `gh://<owner>/<repo>/<release tag>/<asset>` | A release asset of a (private) GitHub repository, using your `gh` sign-in. Check access with `gh release view <release tag> --repo <owner>/<repo>`. |
+| `s3://<bucket>/<key>` | `aws s3 cp` with `AWS_PROFILE` (default `softmax`). |
+| `https://...` | A direct download. |
+| A local path or `file://` URL | A copy you already have. |
+
+Ask a maintainer for the current location. Any copy works as long as it matches
+the lock, so the location can change without a commit. To publish a rebuilt
+archive, see
+[Package the private runtime corpus](docs/agent-improvement-harness-operations.md#package-the-private-runtime-corpus).
 
 This materializes `.private/corpus`, verifies the archive and every contained
 file by SHA-256, and leaves all corpus content gitignored. Docker builds require
