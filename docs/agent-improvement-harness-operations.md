@@ -16,9 +16,11 @@ scripts/cargo.sh build --locked -p coworld-mtg-harness
 ```
 
 The production card export and deck lists are private artifacts. Authorized local runs first materialize the pinned
-compact runtime corpus:
+compact runtime corpus, naming where they can read the archive from (the forms
+are listed under "Private runtime corpus" in the README):
 
 ```sh
+export COWORLD_MTG_CORPUS_URI=gh://<owner>/<repo>/<release tag>/coworld-mtg-corpus-v1.tar.zst
 scripts/fetch-corpus.sh
 ```
 
@@ -45,6 +47,21 @@ are immutable. The builder snapshots the exact payloads, validates a staged copy
 using the fixed relative input name, and rejects nonzero exits, execution errors,
 or changed validation input. It publishes the archive atomically only after
 successful validation and compression.
+
+To publish the archive, upload it anywhere the people who build can read, then
+record its hash and size in `corpus.lock.json` (`sha256`, `bytes`,
+`phase_revision`). The lock does not record the location; each machine names it
+in `COWORLD_MTG_CORPUS_URI`. For a release asset of a private GitHub repository:
+
+```sh
+shasum -a 256 /absolute/owned/output/corpus.tar.zst
+gh release create <release tag> /absolute/owned/output/corpus.tar.zst \
+  --repo <owner>/<private repo> --title <release tag> --notes "Phase <revision>"
+COWORLD_MTG_CORPUS_URI=gh://<owner>/<private repo>/<release tag>/corpus.tar.zst \
+  scripts/fetch-corpus.sh
+```
+
+The final command reads the upload back and verifies it against the lock.
 
 The manifest retains the validator binary hash, declared revision, exact input
 hash and validator output hashes. Raw validator stdout and stderr are private

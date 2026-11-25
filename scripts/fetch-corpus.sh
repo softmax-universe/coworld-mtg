@@ -5,7 +5,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK="${COWORLD_MTG_CORPUS_LOCK:-$ROOT/corpus.lock.json}"
 DESTINATION="${COWORLD_MTG_CORPUS_DIR:-$ROOT/.private/corpus}"
 ALLOWED_PARENT="${COWORLD_MTG_CORPUS_PARENT:-$ROOT/.private}"
-URI="${COWORLD_MTG_CORPUS_URI:-$(jq -r .archive_uri "$LOCK")}"
+# Where the archive lives is the caller's choice, not the repository's: the lock
+# pins what the archive must be (its SHA-256), and COWORLD_MTG_CORPUS_URI says
+# where this machine reads it from. A lock may still carry an `archive_uri`
+# default.
+URI="${COWORLD_MTG_CORPUS_URI:-$(jq -r '.archive_uri // empty' "$LOCK")}"
+if [[ -z "$URI" ]]; then
+  cat >&2 <<'USAGE'
+Set COWORLD_MTG_CORPUS_URI to where the private corpus archive can be read:
+  gh://<owner>/<repo>/<release tag>/<asset>   release asset of a GitHub repository (uses your `gh` sign-in)
+  s3://<bucket>/<key>                         S3 object (uses AWS_PROFILE, default "softmax")
+  https://...                                 direct download
+  /path/to/coworld-mtg-corpus-v1.tar.zst      local file
+The archive must match the SHA-256 in corpus.lock.json. See "Private runtime corpus" in README.md.
+USAGE
+  exit 1
+fi
 EXPECTED_SHA256="$(jq -r .sha256 "$LOCK")"
 
 RESOLVED_PATHS=$(python3 - "$DESTINATION" "$ALLOWED_PARENT" <<'PY'
