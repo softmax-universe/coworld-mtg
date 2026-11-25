@@ -20,7 +20,9 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y zstd
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install nightly-2026-04-19 --profile minimal --component rustfmt --component clippy
+        run: |
+          toolchain=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt --component clippy
       - run: npm ci
       - run: scripts/check.sh
 

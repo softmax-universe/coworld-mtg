@@ -62,7 +62,7 @@ RUN git init /phase \
     && git -C /phase fetch --depth 1 origin "${PHASE_REVISION}" \
     && git -C /phase checkout --detach FETCH_HEAD \
     && mkdir -p /build/.cargo \
-    && printf '[patch."https://github.com/phase-rs/phase.git"]\nengine = { path = "/phase/crates/engine" }\n' \
+    && printf '[patch."https://github.com/phase-rs/phase.git"]\nphase-engine = { path = "/phase/crates/engine" }\n' \
         > /build/.cargo/config.toml
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
