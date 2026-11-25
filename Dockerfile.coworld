@@ -28,7 +28,10 @@ RUN git init /phase \
     && test "$(git -C /phase rev-parse HEAD)" = "${PHASE_REVISION}"
 
 WORKDIR /phase/client
-RUN corepack pnpm@10.28.2 install --frozen-lockfile
+# Phase's client runs `pnpm run protocol:generate` after install, so pnpm must be on PATH.
+RUN corepack enable pnpm \
+    && corepack prepare pnpm@10.28.2 --activate \
+    && corepack pnpm@10.28.2 install --frozen-lockfile
 COPY phase-client /overlay
 RUN git -C /phase apply /overlay/replay-player-names.patch \
     && mkdir -p src/coworld \
